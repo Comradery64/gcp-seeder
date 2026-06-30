@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Credentials produced by the seeder — NEVER commit these.
+*.key.json
+client_secret*.json
+client_secrets*.json
+oauth2service*.json
+service-account*.json
+credentials/
+.env
+.env.local

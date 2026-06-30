@@ -1,0 +1,145 @@
+# gcp-seeder 🌱
+
+**Spin up a fully wired Google Cloud project in one command** — project created, APIs enabled, service-account key minted, OAuth credentials downloaded. No clicking through the Cloud Console. Then `audit` what you've left lying around and `destroy` it when you're done — create, audit, tear down.
+
+A standalone TypeScript library + CLI that reimplements GYB's `create-project` flow — heavily inspired by [GAM-team/got-your-back](https://github.com/GAM-team/got-your-back), generalized beyond Gmail. No GYB code is copied; the approach is reimplemented from scratch. ([Credits](#credits))
+
+```bash
+npx gcp-seeder
+```
+
+That's it. Answer a few prompts and you get a ready-to-use project + credential files.
+
+---
+
+## Why
+
+Every Google API tutorial starts with the same 20-minute slog: create a project, hunt for the right APIs to enable, configure the OAuth consent screen, create credentials, download the JSON. `gcp-seeder` does all of it programmatically so you can get to the actual building.
+
+## Setup (one-time)
+
+```bash
+npx gcp-seeder init
+```
+
+That's the whole setup. `init` checks for the gcloud SDK, **installs it for you** (into your home dir, no sudo) if it's missing, then opens a browser once so you can sign in. Your only job is picking your Google account — credentials land locally via Application Default Credentials.
+
+> If you skip `init` and run `seed` directly, the seeder runs this same check first and offers to do it inline — you won't get stuck.
+
+> **No baked-in secrets.** Unlike GYB (which ships its own OAuth client), this tool never embeds a client id/secret. It uses *your* credentials, obtained through gcloud's standard ADC login. If you'd rather not use gcloud at all, set `GCP_SEEDER_OAUTH_CLIENT_ID` / `GCP_SEEDER_OAUTH_CLIENT_SECRET` to your own desktop-app OAuth client and pass that auth client to the library instead.
+
+## CLI
+
+`gcp-seeder` covers the whole project lifecycle: **create → audit → tear down.**
+
+### Setup — `init`
+
+One-time. Installs the gcloud SDK if missing and signs you in (writes ADC credentials) — see [Setup](#setup-one-time) above. Run it once before the others; they also run this check inline, so you can't get stuck.
+
+```bash
+npx gcp-seeder init
+```
+
+### Create — `seed`
+
+```bash
+# Interactive wizard (recommended first run)
+npx gcp-seeder
+
+# Non-interactive
+npx gcp-seeder --yes \
+  --name "My Gemini App" \
+  --preset ai \
+  --service-account \
+  --output-dir ./credentials
+
+# Pick exact APIs + an OAuth client
+npx gcp-seeder --yes \
+  --apis gmail.googleapis.com,calendar-json.googleapis.com \
+  --oauth-client --support-email you@example.com
+```
+
+| Flag | Description |
+| --- | --- |
+| `-p, --project-id <id>` | Project id (auto-generated if omitted) |
+| `-n, --name <name>` | Display name |
+| `--parent <resource>` | `organizations/123` or `folders/456` |
+| `--apis <list>` | Comma-separated service names |
+| `--preset <name>` | `gmail`, `workspace`, or `ai` |
+| `--service-account` | Create a service account + JSON key |
+| `--oauth-client` | Create an OAuth client + consent screen |
+| `--support-email <email>` | Required with `--oauth-client` |
+| `--output-dir <dir>` | Credential output dir (default `./credentials`) |
+| `-y, --yes` | Skip all prompts |
+
+### Audit — `audit`
+
+Read-only sweep of every project your credentials can see. Flags orphan projects, finds **every static service-account key** (the main credential risk), and surfaces the OAuth client ids whose domain-wide-delegation grants you should check by hand (no API can list DWD).
+
+```bash
+npx gcp-seeder audit              # human-readable report
+npx gcp-seeder audit --json       # machine-readable
+npx gcp-seeder audit --project my-proj-a my-proj-b   # scope to specific projects
+```
+
+### Tear down — `destroy`
+
+Tear down projects you no longer need: revoke their static keys, then soft-delete the project (≈30-day recovery). **Dry-run by default** — it prints the plan and changes nothing until you pass `--apply`, only touches the project ids you name (never wildcards), and refuses projects that don't match an orphan pattern unless you `--force`.
+
+```bash
+npx gcp-seeder destroy --project gyb-project-xyz             # dry-run: show the plan
+npx gcp-seeder destroy --project gyb-project-xyz --apply     # execute (asks to confirm)
+npx gcp-seeder destroy --project gyb-project-xyz --keys-only # just revoke static keys, keep the project
+```
+
+Domain-wide-delegation grants can't be removed via any API, so `destroy` reports the client ids for you to delete in the Admin console.
+
+## Library
+
+```ts
+import { seedProject } from 'gcp-seeder';
+
+const result = await seedProject({
+  displayName: 'My App',
+  apis: ['gmail.googleapis.com', 'aiplatform.googleapis.com'],
+  credentials: { serviceAccount: true, oauthClient: false },
+  outputDir: './credentials',
+});
+
+console.log(result.projectId, result.serviceAccount?.keyFile);
+```
+
+`seedProject` resolves auth via ADC by default, or you can pass your own `auth` client (anything from `google-auth-library`). See [`examples/basic.ts`](./examples/basic.ts).
+
+## What gets created
+
+1. **A new GCP project** with a unique id (polls the create operation to completion).
+2. **APIs enabled** — your selection plus the bootstrap APIs the tool itself needs (Resource Manager, Service Usage, IAM, IAP).
+3. **Service account + key** → `credentials/service-account.json` (if requested).
+4. **OAuth client + consent screen** → `credentials/client_secret.json` (if requested).
+
+All credential files are written with `0600` permissions, and the included `.gitignore` keeps them out of version control. **Never commit these files.**
+
+## ⚠️ The OAuth-client caveat (read this)
+
+Google has **no official public API for creating arbitrary OAuth clients.** Like GYB, this tool repurposes the **IAP brands API** as a workaround. In practice:
+
+- ✅ **Works** for **Google Workspace ("Internal") org** projects.
+- ❌ **Usually fails** for **personal gmail.com** accounts — Google rejects programmatic consent-screen creation.
+
+When it fails, `seedProject` does **not** throw; it records a warning and gives you a direct console link to finish the consent screen by hand. Service-account keys have no such limitation and work everywhere.
+
+## Cleanup
+
+Use the built-in lifecycle commands — `audit` to find what's lying around, `destroy` to tear it down (revokes static keys + soft-deletes, with a dry-run first):
+
+```bash
+npx gcp-seeder audit                                     # what exists?
+npx gcp-seeder destroy --project <project-id> --apply    # tear it down
+```
+
+For a one-off manual delete you can still use `gcloud projects delete <project-id>`, but `destroy` also revokes the static keys and reminds you to remove any domain-wide-delegation grants.
+
+## Credits
+
+Heavily inspired by [Got Your Back (GYB)](https://github.com/GAM-team/got-your-back) and [GAM](https://github.com/GAM-team/GAM) by Jay Lee and the GAM-team contributors (Apache-2.0). The project-bootstrap approach — create project, enable APIs, mint a service-account key, and the IAP-brands trick for OAuth clients — originates there; `gcp-seeder` reimplements it in TypeScript. See [`NOTICE`](./NOTICE).

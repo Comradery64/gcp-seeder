@@ -1,0 +1,16 @@
+gcp-seeder
+Copyright 2026 the gcp-seeder authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It is heavily inspired by, and reimplements the Google Cloud project-bootstrap
+approach from, the following Apache-2.0 projects by Jay Lee and the GAM-team
+contributors:
+
+  Got Your Back (GYB)  -  https://github.com/GAM-team/got-your-back
+  GAM                  -  https://github.com/GAM-team/GAM
+
+No source code was copied verbatim; the flow (project creation, API enablement,
+service-account key minting, and the IAP-brands technique for OAuth clients) was
+re-implemented in TypeScript. All credit for the original approach belongs to the
+GYB/GAM authors.

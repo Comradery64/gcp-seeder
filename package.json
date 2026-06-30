@@ -1,0 +1,65 @@
+{
+  "name": "gcp-seeder",
+  "version": "0.1.0",
+  "description": "Spin up a fully wired Google Cloud project — APIs enabled, service account keyed, OAuth credentials downloaded — in one command. A TypeScript reimplementation inspired by GAM-team/got-your-back.",
+  "license": "Apache-2.0",
+  "author": "Comradery64",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Comradery64/gcp-seeder.git"
+  },
+  "homepage": "https://github.com/Comradery64/gcp-seeder#readme",
+  "bugs": {
+    "url": "https://github.com/Comradery64/gcp-seeder/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "gcp-seeder": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "gcp",
+    "google-cloud",
+    "oauth",
+    "service-account",
+    "bootstrap",
+    "scaffold",
+    "boilerplate",
+    "googleapis"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^7.2.0",
+    "commander": "^12.1.0",
+    "google-auth-library": "^9.15.0",
+    "googleapis": "^144.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.10.0"
+  }
+}
