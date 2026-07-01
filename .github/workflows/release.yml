@@ -1,29 +1,35 @@
 name: Release
 
-# GitOps: every push to main lets release-please maintain a Release PR. Merging it creates
-# the release, which fires the inline publish job below via OIDC — no tags, no tokens.
+# Self-contained GitOps release. Every push to main lets release-please maintain a
+# Release PR (version + CHANGELOG from Conventional Commits). Merging it creates the
+# release, which fires the inline publish job via npm OIDC Trusted Publishing +
+# provenance — no tags to cut, no tokens. Publish runs in THIS repo so npm's trusted
+# publisher (repo=gcp-seeder, workflow=release.yml) accepts the OIDC identity.
 on:
   push:
     branches: [main]
 
-permissions:
-  contents: write # release-please: create release + tag
-  pull-requests: write # release-please: maintain the Release PR
-  id-token: write # publish: OIDC trusted publishing + provenance
-
 jobs:
-  prepare:
-    # release-please (shared), pinned by commit SHA.
-    uses: Comradery64/.github/.github/workflows/npm-release.yml@1161ad4b72983d043db6adb53ef40c27c346691d # v3
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create release + tag
+      pull-requests: write # maintain the Release PR
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+    steps:
+      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
+        id: rp
+        with:
+          release-type: node
 
   publish:
-    needs: prepare
-    if: ${{ needs.prepare.outputs.release_created == 'true' }}
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
-    # Runs in THIS repo so npm Trusted Publishing accepts the OIDC identity.
     permissions:
       contents: read
-      id-token: write
+      id-token: write # OIDC trusted publishing + provenance
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.0
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
