@@ -8,4 +8,4 @@ on:
 jobs:
   ci:
     # Shared pipeline — Comradery64/.github, pinned by commit SHA.
-    uses: Comradery64/.github/.github/workflows/npm-ci.yml@d1dbf206cf411027bf8b11e587bd1499f7a9d6fb # v1
+    uses: Comradery64/.github/.github/workflows/npm-ci.yml@4d801babc41ba3f715523b1f43e23cde4ed0a7dc # v2

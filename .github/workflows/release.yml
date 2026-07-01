@@ -1,16 +1,19 @@
 name: Release
 
+# GitOps: every push to main lets release-please maintain a Release PR.
+# Merging that PR creates a release and publishes via OIDC — no tags, no tokens.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
 
-# OIDC: no npm token. The reusable workflow needs id-token:write, and a caller
-# can only grant permissions it holds — so declare them here too.
+# release-please needs contents + PR write; the publish job needs id-token (OIDC).
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
   id-token: write
 
 jobs:
   release:
     # Comradery64/.github, pinned by commit SHA.
-    uses: Comradery64/.github/.github/workflows/npm-release.yml@d1dbf206cf411027bf8b11e587bd1499f7a9d6fb # v1
+    uses: Comradery64/.github/.github/workflows/npm-release.yml@4d801babc41ba3f715523b1f43e23cde4ed0a7dc # v2
+    # with: { environment: npm-publish }   # uncomment for a manual-approval gate
