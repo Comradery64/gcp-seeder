@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/Comradery64/gcp-seeder/compare/v0.2.0...v0.2.1) (2026-07-01)
+
+
+### Miscellaneous Chores
+
+* release 0.2.1 ([e4a5fee](https://github.com/Comradery64/gcp-seeder/commit/e4a5fee9a1614b8704a85a1334cf6e72e5e0d073))
+
 ## 0.2.0 (2026-07-01)
 
 
