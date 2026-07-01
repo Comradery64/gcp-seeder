@@ -7,6 +7,5 @@ on:
 
 jobs:
   ci:
-    # Shared pipeline — see Comradery64/.github. Pin to a SHA/tag of that repo
-    # once it's pushed (replace @main below).
-    uses: Comradery64/.github/.github/workflows/npm-ci.yml@main
+    # Shared pipeline — Comradery64/.github, pinned by commit SHA.
+    uses: Comradery64/.github/.github/workflows/npm-ci.yml@d1dbf206cf411027bf8b11e587bd1499f7a9d6fb # v1

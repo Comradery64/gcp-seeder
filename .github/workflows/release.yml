@@ -12,5 +12,5 @@ permissions:
 
 jobs:
   release:
-    # Pin to a SHA/tag of Comradery64/.github once pushed (replace @main).
-    uses: Comradery64/.github/.github/workflows/npm-release.yml@main
+    # Comradery64/.github, pinned by commit SHA.
+    uses: Comradery64/.github/.github/workflows/npm-release.yml@d1dbf206cf411027bf8b11e587bd1499f7a9d6fb # v1
