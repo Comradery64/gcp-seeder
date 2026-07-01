@@ -1,0 +1,16 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# OIDC: no npm token. The reusable workflow needs id-token:write, and a caller
+# can only grant permissions it holds — so declare them here too.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  release:
+    # Pin to a SHA/tag of Comradery64/.github once pushed (replace @main).
+    uses: Comradery64/.github/.github/workflows/npm-release.yml@main
