@@ -222,7 +222,10 @@ async function run(opts: CliOptions): Promise<void> {
   console.log(`  Project:  ${result.projectId} (${result.projectNumber})`);
   console.log(`  APIs:     ${result.enabledApis.length} enabled`);
   if (result.serviceAccounts?.length) {
-    for (const sa of result.serviceAccounts) console.log(`  SA key:   ${sa.keyFile}  (${sa.email})`);
+    for (const sa of result.serviceAccounts) {
+      if (sa.keyFile) console.log(`  SA key:   ${sa.keyFile}  (${sa.email})`);
+      else console.log(`  SA:       ${sa.email}  (created, no key — see warnings)`);
+    }
   } else if (result.serviceAccount) {
     console.log(`  SA key:   ${result.serviceAccount.keyFile}`);
   }

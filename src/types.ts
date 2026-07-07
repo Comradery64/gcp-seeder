@@ -213,7 +213,8 @@ export interface SeedResult {
   /** Every service account created, in order. */
   serviceAccounts?: Array<{
     email: string;
-    keyFile: string;
+    /** Path to the JSON key, or null if key creation was blocked (see `warnings`). */
+    keyFile: string | null;
     /** OAuth client id (uniqueId) — used for domain-wide-delegation grants. */
     clientId: string;
   }>;

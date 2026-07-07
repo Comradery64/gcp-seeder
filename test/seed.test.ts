@@ -128,3 +128,47 @@ test('creates multiple named service accounts and surfaces DWD grants', async ()
     await rm(outputDir, { recursive: true, force: true });
   }
 });
+
+test('org policy blocking SA key creation warns instead of throwing', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  const create = mock.fn(async () => ({ data: { name: 'operations/op1' } }));
+  const crmGet = mock.fn(async () => ({ data: { done: true, response: { name: 'projects/424242' } } }));
+  const batchEnable = mock.fn(async () => ({ data: { name: 'operations/su1' } }));
+  const suGet = mock.fn(async () => ({ data: { done: true } }));
+  mock.method(google, 'cloudresourcemanager', () => ({ projects: { create }, operations: { get: crmGet } }) as never);
+  mock.method(google, 'serviceusage', () => ({ services: { batchEnable }, operations: { get: suGet } }) as never);
+
+  // SA creation succeeds, but the org forbids downloadable keys.
+  const saCreate = mock.fn(async () => ({ data: { name: 'projects/p/serviceAccounts/sa1', email: 'sa1@p.iam.gserviceaccount.com', uniqueId: '111' } }));
+  const keyCreate = mock.fn(async () => {
+    throw new Error('Key creation is not allowed on this service account.');
+  });
+  mock.method(google, 'iam', () => ({ projects: { serviceAccounts: { create: saCreate, keys: { create: keyCreate } } } }) as never);
+
+  const scopes = ['https://www.googleapis.com/auth/admin.directory.user.readonly'];
+  const promise = seedProject({
+    projectId: 'seed-unit-3',
+    apis: ['admin.googleapis.com'],
+    credentials: { serviceAccount: false, oauthClient: false },
+    serviceAccounts: [{ id: 'directory-reader', displayName: 'reader', keyFile: 'reader-sa.json', dwdScopes: scopes }],
+    outputDir: '/tmp/should-never-be-written',
+    auth: {} as never,
+    logger: () => {},
+  });
+  for (let i = 0; i < 60; i++) {
+    mock.timers.runAll();
+    await Promise.resolve();
+  }
+  const res = await promise; // must NOT throw
+
+  // The SA is still surfaced (with its client id), just without a key file.
+  assert.equal(res.serviceAccounts?.length, 1);
+  assert.equal(res.serviceAccounts?.[0]?.keyFile, null);
+  assert.equal(res.serviceAccounts?.[0]?.clientId, '111');
+  // Legacy single-SA field stays undefined when no key was written.
+  assert.equal(res.serviceAccount, undefined);
+  // A DWD grant is still emitted — the client id is what matters for DWD.
+  assert.equal(res.dwdGrants?.length, 1);
+  // And a clear, actionable warning names the org policy.
+  assert.ok(res.warnings.some((w) => /disableServiceAccountKeyCreation/.test(w)), 'expected org-policy warning');
+});

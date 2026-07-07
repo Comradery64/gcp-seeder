@@ -112,13 +112,23 @@ async function enableApis(
   return apis;
 }
 
+/**
+ * True when key creation failed because the org forbids it (org policy
+ * `iam.disableServiceAccountKeyCreation`). Common in hardened Workspace orgs.
+ * The SA itself is created fine — only the downloadable key is blocked.
+ */
+function isKeyCreationBlocked(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /key creation is not allowed|disableServiceAccountKeyCreation/i.test(msg);
+}
+
+/** Create the service account (no key). Returns its email + OAuth client id. */
 async function createServiceAccount(
   auth: AuthClient,
   projectId: string,
   spec: ServiceAccountSpec,
-  outputDir: string,
   log: (m: string) => void,
-): Promise<{ email: string; keyFile: string; clientId: string }> {
+): Promise<{ email: string; clientId: string; resourceName: string }> {
   const iam = google.iam({ version: 'v1', auth: auth as never });
   log(`Creating service account "${spec.id}"…`);
   const sa = await iam.projects.serviceAccounts.create({
@@ -128,13 +138,25 @@ async function createServiceAccount(
       serviceAccount: { displayName: spec.displayName },
     },
   });
+  // uniqueId is the OAuth client id a domain-wide-delegation grant is keyed on.
+  return { email: sa.data.email!, clientId: sa.data.uniqueId ?? '', resourceName: sa.data.name! };
+}
 
+/** Mint a JSON key for an existing SA and write it to disk. Returns the file path. */
+async function mintServiceAccountKey(
+  auth: AuthClient,
+  resourceName: string,
+  outputDir: string,
+  keyFileName: string,
+  log: (m: string) => void,
+): Promise<string> {
+  const iam = google.iam({ version: 'v1', auth: auth as never });
   // Newly created SAs can take a moment to be consistent; retry key creation on 404.
   let keyData: string | undefined;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const key = await iam.projects.serviceAccounts.keys.create({
-        name: sa.data.name!,
+        name: resourceName,
         requestBody: {
           privateKeyType: 'TYPE_GOOGLE_CREDENTIALS_FILE',
           keyAlgorithm: 'KEY_ALG_RSA_2048',
@@ -154,11 +176,10 @@ async function createServiceAccount(
   if (!keyData) throw new Error('Service account created but no key material was returned.');
 
   // privateKeyData is base64 of the complete JSON key file.
-  const keyFile = path.join(outputDir, spec.keyFile);
+  const keyFile = path.join(outputDir, keyFileName);
   await writeSecret(keyFile, Buffer.from(keyData, 'base64'));
   log(`✓ Service account key written to ${keyFile}`);
-  // uniqueId is the OAuth client id a domain-wide-delegation grant is keyed on.
-  return { email: sa.data.email!, keyFile, clientId: sa.data.uniqueId ?? '' };
+  return keyFile;
 }
 
 /**
@@ -276,19 +297,37 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
     result.serviceAccounts = [];
     result.dwdGrants = [];
     for (const spec of saSpecs) {
-      const created = await createServiceAccount(auth, projectId, spec, outputDir, log);
-      result.serviceAccounts.push(created);
+      const sa = await createServiceAccount(auth, projectId, spec, log);
+      // The SA is created; a downloadable key can still be blocked by org policy.
+      // Don't discard the SA over that — record a warning and carry on (like the
+      // OAuth-client path). The SA + its client id are still returned.
+      let keyFile: string | null = null;
+      try {
+        keyFile = await mintServiceAccountKey(auth, sa.resourceName, outputDir, spec.keyFile, log);
+      } catch (err) {
+        if (isKeyCreationBlocked(err)) {
+          result.warnings.push(
+            `Service account ${sa.email} was created, but key creation is blocked by an org ` +
+              `policy (iam.disableServiceAccountKeyCreation). Domain-wide delegation requires a ` +
+              `key — ask an org admin to grant an exception for project ${projectId}, then mint a ` +
+              `key for ${sa.email}.`,
+          );
+        } else {
+          throw err;
+        }
+      }
+      result.serviceAccounts.push({ email: sa.email, keyFile, clientId: sa.clientId });
       if (spec.dwdScopes?.length) {
         result.dwdGrants.push({
-          serviceAccountEmail: created.email,
-          clientId: created.clientId,
+          serviceAccountEmail: sa.email,
+          clientId: sa.clientId,
           scopes: spec.dwdScopes,
         });
       }
     }
-    // Back-compat: expose the first SA on the legacy single-SA field.
-    const first = result.serviceAccounts[0];
-    if (first) result.serviceAccount = { email: first.email, keyFile: first.keyFile };
+    // Back-compat: expose the first SA that actually has a key on the legacy field.
+    const firstWithKey = result.serviceAccounts.find((s) => s.keyFile);
+    if (firstWithKey) result.serviceAccount = { email: firstWithKey.email, keyFile: firstWithKey.keyFile! };
   }
 
   if (options.credentials.oauthClient) {

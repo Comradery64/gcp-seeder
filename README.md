@@ -98,6 +98,8 @@ DWD is the one part Google exposes **no API for** — you can't create the autho
 
 `--dwd-scopes` only controls what the seeder *reminds* you to authorize; it grants nothing. Read-only vs. write is entirely up to the scopes you list.
 
+> **Org policy note.** Many hardened Workspace orgs enforce `iam.disableServiceAccountKeyCreation`, which blocks *downloadable* SA keys. DWD-based sync needs a key, so on such orgs the seeder still creates the service account (and reports its client id), but records a **warning** instead of failing — you'll need an org admin to grant a policy exception for the project, then mint the key. The project is left in place so you can finish once the exception lands.
+
 ### Audit — `audit`
 
 Read-only sweep of every project your credentials can see. Flags orphan projects, finds **every static service-account key** (the main credential risk), and surfaces the OAuth client ids whose domain-wide-delegation grants you should check by hand (no API can list DWD).
