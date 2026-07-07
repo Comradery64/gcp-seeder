@@ -1,6 +1,6 @@
 {
   "name": "gcp-seeder",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Spin up a fully wired Google Cloud project — APIs enabled, service account keyed, OAuth credentials downloaded — in one command. A TypeScript reimplementation inspired by GAM-team/got-your-back.",
   "license": "Apache-2.0",
   "author": "Comradery64",
