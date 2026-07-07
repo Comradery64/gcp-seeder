@@ -65,12 +65,38 @@ npx gcp-seeder --yes \
 | `-n, --name <name>` | Display name |
 | `--parent <resource>` | `organizations/123` or `folders/456` |
 | `--apis <list>` | Comma-separated service names |
-| `--preset <name>` | `gmail`, `workspace`, or `ai` |
-| `--service-account` | Create a service account + JSON key |
+| `--preset <name>` | `gmail`, `workspace`, `ai`, or `directory-sync` |
+| `--service-account` | Create a single default service account + JSON key |
+| `--service-accounts <names>` | Create one named SA + key per comma-separated name |
+| `--dwd-scopes <csv>` | OAuth scopes to surface for domain-wide delegation on the created SAs |
 | `--oauth-client` | Create an OAuth client + consent screen |
 | `--support-email <email>` | Required with `--oauth-client` |
 | `--output-dir <dir>` | Credential output dir (default `./credentials`) |
 | `-y, --yes` | Skip all prompts |
+
+### Service accounts + domain-wide delegation
+
+Need one or more service accounts intended for **domain-wide delegation** (server-to-server access that impersonates a Workspace user)? Two ways:
+
+```bash
+# Convenience preset: enable the Admin SDK + a read-only Directory reader SA
+npx gcp-seeder --yes --preset directory-sync --output-dir ./credentials
+# → credentials/directory-reader-sa.json
+
+# Or mint any number of named SAs generically, with the scopes you choose
+npx gcp-seeder --yes \
+  --apis admin.googleapis.com \
+  --service-accounts reader,writer \
+  --dwd-scopes https://www.googleapis.com/auth/admin.directory.user.readonly
+# → credentials/reader-sa.json, credentials/writer-sa.json
+```
+
+DWD is the one part Google exposes **no API for** — you can't create the authorization programmatically. So instead of leaving you to research it, the seeder prints each SA's OAuth **client id** and the exact scope list to paste into **Admin console → Security → API controls → Domain-wide delegation**. Two things stay manual by design:
+
+- **The DWD grant itself** — no API exists; the tool turns it into one copy-paste.
+- **The impersonated admin/user email** — that's runtime config in your consuming tool, not a provisioning artifact.
+
+`--dwd-scopes` only controls what the seeder *reminds* you to authorize; it grants nothing. Read-only vs. write is entirely up to the scopes you list.
 
 ### Audit — `audit`
 

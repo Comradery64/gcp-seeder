@@ -1,4 +1,4 @@
-import type { ApiDefinition } from './types.js';
+import type { ApiDefinition, ServiceAccountSpec } from './types.js';
 
 /**
  * Curated catalog of commonly-wanted Google APIs.
@@ -64,6 +64,65 @@ export const PRESETS: Record<string, string[]> = {
   ],
   ai: ['aiplatform.googleapis.com', 'generativelanguage.googleapis.com'],
 };
+
+/**
+ * The read-only Workspace Directory scopes a directory-sync tool typically
+ * needs (users, groups, and group members). Authorized via domain-wide
+ * delegation in the Admin console — there is no API to grant them.
+ */
+export const DIRECTORY_READONLY_SCOPES = [
+  'https://www.googleapis.com/auth/admin.directory.user.readonly',
+  'https://www.googleapis.com/auth/admin.directory.group.readonly',
+  'https://www.googleapis.com/auth/admin.directory.group.member.readonly',
+];
+
+/**
+ * A richer preset that provisions service accounts (with keys), not just APIs.
+ * `--preset <name>` picks these up the same way it picks up API-only PRESETS.
+ */
+export interface ProvisioningPreset {
+  /** APIs to enable (in addition to the always-on bootstrap set). */
+  apis: string[];
+  /** Service accounts to create, each with its own downloaded key. */
+  serviceAccounts: ServiceAccountSpec[];
+  /** Extra human notes printed after seeding (e.g. manual follow-ups). */
+  notes?: string[];
+}
+
+/**
+ * Provisioning presets — bundles that create service accounts too. Kept separate
+ * from the API-only PRESETS so `seedProject` stays a thin primitive.
+ */
+export const PROVISIONING_PRESETS: Record<string, ProvisioningPreset> = {
+  // Provision a project to read a Google Workspace directory from an external
+  // tool (SSO sync, an identity bridge, an org chart importer, …). Enables the
+  // Admin SDK and creates a read-only Directory service account whose scopes you
+  // then authorize by hand via domain-wide delegation.
+  //
+  // Need more than one consumer (least privilege = one SA each)? Use the generic
+  // `--service-accounts a,b,c --dwd-scopes <csv>` flags instead of this preset.
+  'directory-sync': {
+    apis: ['admin.googleapis.com'],
+    serviceAccounts: [
+      {
+        id: 'directory-reader',
+        displayName: 'Directory reader (read-only)',
+        keyFile: 'directory-reader-sa.json',
+        dwdScopes: DIRECTORY_READONLY_SCOPES,
+      },
+    ],
+    notes: [
+      'This service account impersonates a Workspace admin via domain-wide delegation — ' +
+        "set that admin email in your consuming tool's own config, not here.",
+      'These scopes are read-only. Writing to the directory (e.g. group membership) needs a ' +
+        'separate DWD grant for the corresponding write scope (e.g. admin.directory.group.member).',
+    ],
+  },
+};
+
+export function lookupProvisioningPreset(name: string): ProvisioningPreset | undefined {
+  return PROVISIONING_PRESETS[name];
+}
 
 const CATALOG_BY_SERVICE = new Map(API_CATALOG.map((a) => [a.service, a]));
 

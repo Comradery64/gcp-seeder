@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import { checkbox, confirm, input, select, Separator } from '@inquirer/prompts';
 import { Command } from 'commander';
-import { API_CATALOG, PRESETS } from './apis.js';
+import { API_CATALOG, PRESETS, PROVISIONING_PRESETS } from './apis.js';
 import { auditCloud } from './audit.js';
 import { destroyProjects } from './destroy.js';
 import { findGcloud, hasAdc, installGcloud, runAdcLogin } from './gcloud.js';
 import { generateProjectId, seedProject } from './seeder.js';
-import type { AuditReport, CredentialTargets, DestroyResult } from './types.js';
+import type { AuditReport, CredentialTargets, DestroyResult, SeedResult, ServiceAccountSpec } from './types.js';
+
+const ALL_PRESETS = [...Object.keys(PRESETS), ...Object.keys(PROVISIONING_PRESETS)];
 
 const log = (m: string) => console.log(m);
 
@@ -24,8 +26,10 @@ program
   .option('-n, --name <name>', 'Project display name')
   .option('--parent <resource>', 'Parent, e.g. organizations/123 or folders/456')
   .option('--apis <list>', 'Comma-separated service names to enable')
-  .option('--preset <name>', `Use an API preset: ${Object.keys(PRESETS).join(', ')}`)
-  .option('--service-account', 'Create a service account + key')
+  .option('--preset <name>', `Use a preset: ${ALL_PRESETS.join(', ')}`)
+  .option('--service-account', 'Create a single default service account + key')
+  .option('--service-accounts <names>', 'Create one named service account + key per comma-separated name')
+  .option('--dwd-scopes <csv>', 'OAuth scopes to surface for domain-wide delegation on the created SAs')
   .option('--oauth-client', 'Create an OAuth client + consent screen')
   .option('--support-email <email>', 'Consent-screen support email (for --oauth-client)')
   .option('--output-dir <dir>', 'Where to write credentials', './credentials')
@@ -135,6 +139,8 @@ interface CliOptions {
   apis?: string;
   preset?: string;
   serviceAccount?: boolean;
+  serviceAccounts?: string;
+  dwdScopes?: string;
   oauthClient?: boolean;
   supportEmail?: string;
   outputDir: string;
@@ -152,8 +158,28 @@ async function run(opts: CliOptions): Promise<void> {
     (interactive ? await input({ message: 'Project id (blank = auto-generate):' }) : '');
   const projectId = promptedId.trim() || generateProjectId();
 
-  const apis = await resolveApis(opts, interactive);
-  const credentials = await resolveCredentials(opts, interactive);
+  // A provisioning preset (e.g. directory-sync) also declares service accounts,
+  // as do the generic --service-accounts / --dwd-scopes flags — either short-
+  // circuits the interactive credential prompt.
+  const provisioning = opts.preset ? PROVISIONING_PRESETS[opts.preset] : undefined;
+  let apis: string[];
+  let credentials: CredentialTargets;
+  let serviceAccounts = resolveServiceAccounts(opts); // from generic flags (may be [])
+  const notes = provisioning?.notes;
+
+  if (provisioning) {
+    const extra = opts.apis ? opts.apis.split(',').map((s) => s.trim()).filter(Boolean) : [];
+    apis = [...new Set([...provisioning.apis, ...extra])];
+    credentials = { serviceAccount: false, oauthClient: Boolean(opts.oauthClient) };
+    // Explicit --service-accounts overrides the preset's default SA set.
+    if (serviceAccounts.length === 0) serviceAccounts = provisioning.serviceAccounts;
+  } else if (serviceAccounts.length) {
+    apis = await resolveApis(opts, interactive);
+    credentials = { serviceAccount: false, oauthClient: Boolean(opts.oauthClient) };
+  } else {
+    apis = await resolveApis(opts, interactive);
+    credentials = await resolveCredentials(opts, interactive);
+  }
 
   let supportEmail = opts.supportEmail;
   if (credentials.oauthClient && !supportEmail && interactive) {
@@ -163,10 +189,16 @@ async function run(opts: CliOptions): Promise<void> {
     });
   }
 
+  const saSummary = serviceAccounts?.length
+    ? serviceAccounts.map((s) => s.id).join(', ')
+    : credentials.serviceAccount
+      ? 'yes (1)'
+      : 'no';
+
   console.log('\nReady to seed:');
   console.log(`  project       ${projectId}`);
   console.log(`  apis          ${apis.length ? apis.join(', ') : '(none)'}`);
-  console.log(`  service acct  ${credentials.serviceAccount ? 'yes' : 'no'}`);
+  console.log(`  service acct  ${saSummary}`);
   console.log(`  oauth client  ${credentials.oauthClient ? 'yes' : 'no'}`);
   console.log(`  output dir    ${opts.outputDir}\n`);
 
@@ -181,6 +213,7 @@ async function run(opts: CliOptions): Promise<void> {
     parent: opts.parent,
     apis,
     credentials,
+    serviceAccounts,
     supportEmail,
     outputDir: opts.outputDir,
   });
@@ -188,12 +221,39 @@ async function run(opts: CliOptions): Promise<void> {
   console.log('\n✓ Done!');
   console.log(`  Project:  ${result.projectId} (${result.projectNumber})`);
   console.log(`  APIs:     ${result.enabledApis.length} enabled`);
-  if (result.serviceAccount) console.log(`  SA key:   ${result.serviceAccount.keyFile}`);
+  if (result.serviceAccounts?.length) {
+    for (const sa of result.serviceAccounts) console.log(`  SA key:   ${sa.keyFile}  (${sa.email})`);
+  } else if (result.serviceAccount) {
+    console.log(`  SA key:   ${result.serviceAccount.keyFile}`);
+  }
   if (result.oauthClient) console.log(`  OAuth:    ${result.oauthClient.clientSecretsFile}`);
   for (const w of result.warnings) console.warn(`  ⚠ ${w}`);
+
+  printDwdGuidance(result, notes);
+
   console.log(
     `\nConsole: https://console.cloud.google.com/home/dashboard?project=${result.projectId}`,
   );
+}
+
+/**
+ * Print the manual domain-wide-delegation step. DWD grants have no public API,
+ * so we hand the user the exact client id + scope CSV to paste into the Admin
+ * console — turning research into one copy-paste.
+ */
+function printDwdGuidance(result: SeedResult, notes?: string[]): void {
+  if (!result.dwdGrants?.length) return;
+  console.log('\n⚠ Manual step — authorize domain-wide delegation (no API can do this):');
+  console.log('  Admin console → Security → Access and data control → API controls → Domain-wide delegation → Add new');
+  for (const g of result.dwdGrants) {
+    console.log(`\n  • ${g.serviceAccountEmail}`);
+    console.log(`      Client ID: ${g.clientId}`);
+    console.log(`      Scopes:    ${g.scopes.join(',')}`);
+  }
+  if (notes?.length) {
+    console.log('\nNotes:');
+    for (const n of notes) console.log(`  - ${n}`);
+  }
 }
 
 async function resolveApis(opts: CliOptions, interactive: boolean): Promise<string[]> {
@@ -226,6 +286,24 @@ async function resolveApis(opts: CliOptions, interactive: boolean): Promise<stri
     choices,
     pageSize: 20,
   });
+}
+
+/**
+ * Build service-account specs from the generic `--service-accounts` /
+ * `--dwd-scopes` flags. One SA per comma-separated name, each written to
+ * `<name>-sa.json`, all sharing the same DWD scopes (if any). Returns [] when
+ * `--service-accounts` was not passed.
+ */
+function resolveServiceAccounts(opts: CliOptions): ServiceAccountSpec[] {
+  if (!opts.serviceAccounts) return [];
+  const scopes = opts.dwdScopes
+    ? opts.dwdScopes.split(',').map((s) => s.trim()).filter(Boolean)
+    : undefined;
+  return opts.serviceAccounts
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((id) => ({ id, displayName: id, keyFile: `${id}-sa.json`, dwdScopes: scopes }));
 }
 
 async function resolveCredentials(opts: CliOptions, interactive: boolean): Promise<CredentialTargets> {

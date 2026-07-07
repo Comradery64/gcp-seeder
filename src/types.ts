@@ -12,6 +12,29 @@ export interface ApiDefinition {
   group: 'workspace' | 'ai' | 'platform' | 'data' | 'other';
 }
 
+/**
+ * A named service account to create + key. Use this when you need more than one
+ * SA (e.g. one per consumer, for least privilege) or meaningful names/filenames.
+ * `credentials.serviceAccount: true` is the shorthand for a single default SA.
+ */
+export interface ServiceAccountSpec {
+  /**
+   * The account id (the local part of the SA email). GCP rules: 6-30 chars,
+   * lowercase letters/digits/hyphens, must start with a letter.
+   */
+  id: string;
+  /** Human-friendly display name shown in the console. */
+  displayName: string;
+  /** Filename for the JSON key, relative to `outputDir` (e.g. "directory-reader-sa.json"). */
+  keyFile: string;
+  /**
+   * OAuth scopes this SA is meant to use via domain-wide delegation. Guidance
+   * ONLY — DWD grants have no public API, so the seeder surfaces the SA's client
+   * id + these scopes for you to authorize by hand in the Admin console.
+   */
+  dwdScopes?: string[];
+}
+
 /** Which credential artifacts the seeder should produce. */
 export interface CredentialTargets {
   /**
@@ -44,6 +67,12 @@ export interface SeedOptions {
   apis: string[];
   /** What credential files to generate. */
   credentials: CredentialTargets;
+  /**
+   * Explicit service accounts to create (each gets its own JSON key). When
+   * provided, these are minted in addition to any implied by
+   * `credentials.serviceAccount`. Use for multi-SA / least-privilege setups.
+   */
+  serviceAccounts?: ServiceAccountSpec[];
   /**
    * Support email shown on the OAuth consent screen. Required when
    * `credentials.oauthClient` is true.
@@ -156,14 +185,43 @@ export interface DestroyResult {
   projects: ProjectDestroyResult[];
 }
 
+/**
+ * A domain-wide-delegation authorization the caller must complete by hand.
+ * There is no public API to create DWD grants, so the seeder returns the exact
+ * client id + scopes to paste into the Admin console.
+ */
+export interface DwdGrant {
+  serviceAccountEmail: string;
+  /** The SA's OAuth client id (uniqueId) — what a DWD grant is keyed on. */
+  clientId: string;
+  /** Scopes to authorize for this client id. */
+  scopes: string[];
+}
+
 export interface SeedResult {
   projectId: string;
   projectNumber: string;
   enabledApis: string[];
+  /**
+   * The first service account created, if any. Retained for backwards
+   * compatibility; prefer `serviceAccounts` for multi-SA setups.
+   */
   serviceAccount?: {
     email: string;
     keyFile: string;
   };
+  /** Every service account created, in order. */
+  serviceAccounts?: Array<{
+    email: string;
+    keyFile: string;
+    /** OAuth client id (uniqueId) — used for domain-wide-delegation grants. */
+    clientId: string;
+  }>;
+  /**
+   * Domain-wide-delegation grants still to authorize by hand (one per SA that
+   * declared `dwdScopes`). No API can create these.
+   */
+  dwdGrants?: DwdGrant[];
   oauthClient?: {
     clientSecretsFile: string;
   };

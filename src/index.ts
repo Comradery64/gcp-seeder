@@ -8,11 +8,22 @@ export { auditCloud } from './audit.js';
 export { destroyProjects } from './destroy.js';
 export { resolveAuth, buildOAuthClientFromEnv, CLOUD_PLATFORM_SCOPE, AuthError } from './auth.js';
 export { findGcloud, installGcloud, runAdcLogin, hasAdc, adcPath } from './gcloud.js';
-export { API_CATALOG, BOOTSTRAP_APIS, PRESETS, lookupApi } from './apis.js';
+export {
+  API_CATALOG,
+  BOOTSTRAP_APIS,
+  PRESETS,
+  PROVISIONING_PRESETS,
+  DIRECTORY_READONLY_SCOPES,
+  lookupApi,
+  lookupProvisioningPreset,
+} from './apis.js';
+export type { ProvisioningPreset } from './apis.js';
 export type {
   SeedOptions,
   SeedResult,
   CredentialTargets,
+  ServiceAccountSpec,
+  DwdGrant,
   ApiDefinition,
   AuditOptions,
   AuditReport,

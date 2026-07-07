@@ -1,5 +1,8 @@
 import test, { mock, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { google } from 'googleapis';
 import { seedProject, generateProjectId } from '../src/seeder.js';
 
@@ -69,4 +72,59 @@ test('happy path: creates the project and enables the requested APIs', async () 
   assert.equal(create.mock.callCount(), 1);
   assert.ok(batchEnable.mock.callCount() >= 1);
   assert.equal(res.serviceAccount, undefined); // none requested
+});
+
+test('creates multiple named service accounts and surfaces DWD grants', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  const create = mock.fn(async () => ({ data: { name: 'operations/op1' } }));
+  const crmGet = mock.fn(async () => ({ data: { done: true, response: { name: 'projects/424242' } } }));
+  const batchEnable = mock.fn(async () => ({ data: { name: 'operations/su1' } }));
+  const suGet = mock.fn(async () => ({ data: { done: true } }));
+  mock.method(google, 'cloudresourcemanager', () => ({ projects: { create }, operations: { get: crmGet } }) as never);
+  mock.method(google, 'serviceusage', () => ({ services: { batchEnable }, operations: { get: suGet } }) as never);
+
+  // Each SA create returns a distinct email + uniqueId (the DWD client id).
+  let n = 0;
+  const saCreate = mock.fn(async () => {
+    n += 1;
+    return { data: { name: `projects/p/serviceAccounts/sa${n}`, email: `sa${n}@p.iam.gserviceaccount.com`, uniqueId: `10000000000000000000${n}` } };
+  });
+  const keyCreate = mock.fn(async () => ({ data: { privateKeyData: Buffer.from('{"type":"service_account"}').toString('base64') } }));
+  mock.method(google, 'iam', () => ({ projects: { serviceAccounts: { create: saCreate, keys: { create: keyCreate } } } }) as never);
+
+  const outputDir = await mkdtemp(path.join(tmpdir(), 'gcp-seeder-test-'));
+  try {
+    const scopes = ['https://www.googleapis.com/auth/admin.directory.user.readonly'];
+    const promise = seedProject({
+      projectId: 'seed-unit-2',
+      apis: ['admin.googleapis.com'],
+      credentials: { serviceAccount: false, oauthClient: false },
+      serviceAccounts: [
+        { id: 'reader-a', displayName: 'reader a', keyFile: 'reader-a-sa.json', dwdScopes: scopes },
+        { id: 'reader-b', displayName: 'reader b', keyFile: 'reader-b-sa.json', dwdScopes: scopes },
+      ],
+      outputDir,
+      auth: {} as never,
+      logger: () => {},
+    });
+    for (let i = 0; i < 60; i++) {
+      mock.timers.runAll();
+      await Promise.resolve();
+    }
+    const res = await promise;
+
+    assert.equal(saCreate.mock.callCount(), 2);
+    assert.equal(res.serviceAccounts?.length, 2);
+    // Legacy field points at the first SA.
+    assert.equal(res.serviceAccount?.keyFile, path.join(outputDir, 'reader-a-sa.json'));
+    // One DWD grant per SA, keyed on the SA's uniqueId.
+    assert.equal(res.dwdGrants?.length, 2);
+    assert.equal(res.dwdGrants?.[0]?.clientId, '100000000000000000001');
+    assert.deepEqual(res.dwdGrants?.[0]?.scopes, scopes);
+    // Both key files were actually written.
+    const written = await readFile(path.join(outputDir, 'reader-b-sa.json'), 'utf8');
+    assert.match(written, /service_account/);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
 });

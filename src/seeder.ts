@@ -5,7 +5,7 @@ import { google } from 'googleapis';
 import type { AuthClient } from 'google-auth-library';
 import { BOOTSTRAP_APIS } from './apis.js';
 import { resolveAuth } from './auth.js';
-import type { SeedOptions, SeedResult } from './types.js';
+import type { SeedOptions, SeedResult, ServiceAccountSpec } from './types.js';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const dedupe = (xs: string[]) => [...new Set(xs)];
@@ -112,20 +112,20 @@ async function enableApis(
   return apis;
 }
 
-async function createServiceAccountKey(
+async function createServiceAccount(
   auth: AuthClient,
   projectId: string,
+  spec: ServiceAccountSpec,
   outputDir: string,
   log: (m: string) => void,
-): Promise<{ email: string; keyFile: string }> {
+): Promise<{ email: string; keyFile: string; clientId: string }> {
   const iam = google.iam({ version: 'v1', auth: auth as never });
-  const accountId = `seeder-sa-${randomBytes(2).toString('hex')}`;
-  log(`Creating service account "${accountId}"…`);
+  log(`Creating service account "${spec.id}"…`);
   const sa = await iam.projects.serviceAccounts.create({
     name: `projects/${projectId}`,
     requestBody: {
-      accountId,
-      serviceAccount: { displayName: 'GCP Seeder Service Account' },
+      accountId: spec.id,
+      serviceAccount: { displayName: spec.displayName },
     },
   });
 
@@ -154,10 +154,11 @@ async function createServiceAccountKey(
   if (!keyData) throw new Error('Service account created but no key material was returned.');
 
   // privateKeyData is base64 of the complete JSON key file.
-  const keyFile = path.join(outputDir, 'service-account.json');
+  const keyFile = path.join(outputDir, spec.keyFile);
   await writeSecret(keyFile, Buffer.from(keyData, 'base64'));
   log(`✓ Service account key written to ${keyFile}`);
-  return { email: sa.data.email!, keyFile };
+  // uniqueId is the OAuth client id a domain-wide-delegation grant is keyed on.
+  return { email: sa.data.email!, keyFile, clientId: sa.data.uniqueId ?? '' };
 }
 
 /**
@@ -260,8 +261,34 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
     warnings: [],
   };
 
-  if (options.credentials.serviceAccount) {
-    result.serviceAccount = await createServiceAccountKey(auth, projectId, outputDir, log);
+  // Resolve which service accounts to mint. An explicit `serviceAccounts` list
+  // wins; otherwise `credentials.serviceAccount: true` implies one default SA.
+  const saSpecs: ServiceAccountSpec[] = [...(options.serviceAccounts ?? [])];
+  if (options.credentials.serviceAccount && saSpecs.length === 0) {
+    saSpecs.push({
+      id: `seeder-sa-${randomBytes(2).toString('hex')}`,
+      displayName: 'GCP Seeder Service Account',
+      keyFile: 'service-account.json',
+    });
+  }
+
+  if (saSpecs.length) {
+    result.serviceAccounts = [];
+    result.dwdGrants = [];
+    for (const spec of saSpecs) {
+      const created = await createServiceAccount(auth, projectId, spec, outputDir, log);
+      result.serviceAccounts.push(created);
+      if (spec.dwdScopes?.length) {
+        result.dwdGrants.push({
+          serviceAccountEmail: created.email,
+          clientId: created.clientId,
+          scopes: spec.dwdScopes,
+        });
+      }
+    }
+    // Back-compat: expose the first SA on the legacy single-SA field.
+    const first = result.serviceAccounts[0];
+    if (first) result.serviceAccount = { email: first.email, keyFile: first.keyFile };
   }
 
   if (options.credentials.oauthClient) {
