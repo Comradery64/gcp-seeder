@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/Comradery64/gcp-seeder/compare/v0.3.0...v0.3.1) (2026-07-07)
+
+
+### Bug Fixes
+
+* warn instead of throw when SA key creation is blocked by org policy ([3e8155b](https://github.com/Comradery64/gcp-seeder/commit/3e8155b39f7597ce9ae0f2141d8148f1099f5821))
+
 ## [0.3.0](https://github.com/Comradery64/gcp-seeder/compare/v0.2.1...v0.3.0) (2026-07-07)
 
 
