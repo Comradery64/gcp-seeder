@@ -12,3 +12,4 @@ credentials/
 .env
 .env.local
 .frugal-fable/
+PLAN.md
