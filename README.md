@@ -98,11 +98,41 @@ DWD is the one part Google exposes **no API for** — you can't create the autho
 
 `--dwd-scopes` only controls what the seeder *reminds* you to authorize; it grants nothing. Read-only vs. write is entirely up to the scopes you list.
 
-> **Org policy note.** Many hardened Workspace orgs enforce `iam.disableServiceAccountKeyCreation`, which blocks *downloadable* SA keys. DWD-based sync needs a key, so on such orgs the seeder still creates the service account (and reports its client id), but records a **warning** instead of failing — you'll need an org admin to grant a policy exception for the project, then mint the key. The project is left in place so you can finish once the exception lands.
+> **Org policy note.** Many hardened Workspace orgs enforce `iam.disableServiceAccountKeyCreation`, which blocks *downloadable* SA keys. DWD-based sync needs a key, so on such orgs the seeder still creates the service account (and reports its client id), but records a **warning** instead of failing — you'll need an org admin to grant a policy exception for the project, then mint the key. The project is left in place so you can finish once the exception lands. **For CI, don't fight the policy — use keyless auth ([WIF](#keyless-ci-auth-wif)) instead.**
+
+### Keyless CI auth (WIF)
+
+For CI you usually don't want a downloadable key at all — keys leak, never rotate, and are exactly what `iam.disableServiceAccountKeyCreation` blocks. Instead, federate your CI provider's OIDC tokens directly to the service account with **Workload Identity Federation**. Today the seeder wires up **GitHub Actions**:
+
+```bash
+# Create the project + a service account, and set up keyless GitHub Actions auth for a repo
+npx gcp-seeder --yes \
+  --apis run.googleapis.com \
+  --wif github:my-org/my-repo \
+  --output-dir ./credentials
+```
+
+This creates a workload identity pool + an OIDC provider that trusts GitHub's issuer, **locked to the exact repo** (`assertion.repository == 'my-org/my-repo'` — without this condition GitHub's shared issuer would let *any* repo assume the identity), grants the repo's federated principal `roles/iam.workloadIdentityUser` on the SA, and writes a ready-to-paste step to `credentials/github-actions-auth.yml`:
+
+```yaml
+permissions:
+  contents: read
+  id-token: write   # required — GitHub mints the OIDC token
+
+steps:
+  - uses: google-github-actions/auth@v2
+    with:
+      workload_identity_provider: projects/<NUMBER>/locations/global/workloadIdentityPools/gh-pool/providers/<PROVIDER>
+      service_account: <sa>@<project>.iam.gserviceaccount.com
+```
+
+No key is written, nothing secret ends up in your repo, and there's nothing to rotate. `--wif` implies a service account if you didn't ask for one; enable `sts.googleapis.com` and `iamcredentials.googleapis.com` are handled for you. Re-running against the same project reuses the existing pool/provider.
+
+> Only `github:owner/repo` is supported today; the `provider:` prefix leaves room for other OIDC providers later.
 
 ### Audit — `audit`
 
-Read-only sweep of every project your credentials can see. Flags orphan projects, finds **every static service-account key** (the main credential risk), and surfaces the OAuth client ids whose domain-wide-delegation grants you should check by hand (no API can list DWD).
+Read-only sweep of every project your credentials can see. Flags orphan projects, finds **every static service-account key** (the main credential risk), surfaces the OAuth client ids whose domain-wide-delegation grants you should check by hand (no API can list DWD), and lists **Workload Identity Federation providers** (keyless-auth) with the issuer + repo condition each one trusts.
 
 ```bash
 npx gcp-seeder audit              # human-readable report
@@ -112,15 +142,15 @@ npx gcp-seeder audit --project my-proj-a my-proj-b   # scope to specific project
 
 ### Tear down — `destroy`
 
-Tear down projects you no longer need: revoke their static keys, then soft-delete the project (≈30-day recovery). **Dry-run by default** — it prints the plan and changes nothing until you pass `--apply`, only touches the project ids you name (never wildcards), and refuses projects that don't match an orphan pattern unless you `--force`.
+Tear down projects you no longer need: revoke their static keys, tear down any Workload Identity Federation pools, then soft-delete the project (≈30-day recovery). **Dry-run by default** — it prints the plan and changes nothing until you pass `--apply`, only touches the project ids you name (never wildcards), and refuses projects that don't match an orphan pattern unless you `--force`.
 
 ```bash
 npx gcp-seeder destroy --project gyb-project-xyz             # dry-run: show the plan
 npx gcp-seeder destroy --project gyb-project-xyz --apply     # execute (asks to confirm)
-npx gcp-seeder destroy --project gyb-project-xyz --keys-only # just revoke static keys, keep the project
+npx gcp-seeder destroy --project gyb-project-xyz --keys-only # revoke standing credentials (keys + WIF pools), keep the project
 ```
 
-Domain-wide-delegation grants can't be removed via any API, so `destroy` reports the client ids for you to delete in the Admin console.
+`--keys-only` revokes **all standing credentials** — static keys *and* WIF pools — while keeping the project and its service accounts, since WIF is a live credential path just like a key. Domain-wide-delegation grants can't be removed via any API, so `destroy` reports the client ids for you to delete in the Admin console.
 
 ## Library
 

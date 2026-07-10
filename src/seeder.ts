@@ -5,7 +5,8 @@ import { google } from 'googleapis';
 import type { AuthClient } from 'google-auth-library';
 import { BOOTSTRAP_APIS } from './apis.js';
 import { resolveAuth } from './auth.js';
-import type { SeedOptions, SeedResult, ServiceAccountSpec } from './types.js';
+import { setupGithubWif, WIF_APIS } from './wif.js';
+import type { SeedOptions, SeedResult, ServiceAccountSpec, WifResult } from './types.js';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const dedupe = (xs: string[]) => [...new Set(xs)];
@@ -270,9 +271,23 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
     throw new Error('supportEmail is required when credentials.oauthClient is true.');
   }
 
+  // WIF needs a service account to bind the federated principal to. Fail early
+  // (before creating anything) rather than after a project exists.
+  const willCreateSa = Boolean(options.serviceAccounts?.length) || options.credentials.serviceAccount;
+  if (options.wif && !willCreateSa) {
+    throw new Error(
+      'options.wif requires at least one service account to bind. ' +
+        'Pass credentials.serviceAccount: true or an explicit serviceAccounts list.',
+    );
+  }
+
   const projectNumber = await createProject(auth, projectId, displayName, options.parent, log);
 
-  const apisToEnable = dedupe([...BOOTSTRAP_APIS, ...options.apis]);
+  const apisToEnable = dedupe([
+    ...BOOTSTRAP_APIS,
+    ...(options.wif ? WIF_APIS : []),
+    ...options.apis,
+  ]);
   const enabledApis = await enableApis(auth, projectId, apisToEnable, log);
 
   const result: SeedResult = {
@@ -308,9 +323,10 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
         if (isKeyCreationBlocked(err)) {
           result.warnings.push(
             `Service account ${sa.email} was created, but key creation is blocked by an org ` +
-              `policy (iam.disableServiceAccountKeyCreation). Domain-wide delegation requires a ` +
-              `key — ask an org admin to grant an exception for project ${projectId}, then mint a ` +
-              `key for ${sa.email}.`,
+              `policy (iam.disableServiceAccountKeyCreation). For CI, prefer keyless auth: re-run ` +
+              `with --wif github:owner/repo to federate GitHub Actions instead of a key. ` +
+              `Domain-wide delegation still requires a key — ask an org admin to grant an ` +
+              `exception for project ${projectId}, then mint a key for ${sa.email}.`,
           );
         } else {
           throw err;
@@ -328,6 +344,28 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
     // Back-compat: expose the first SA that actually has a key on the legacy field.
     const firstWithKey = result.serviceAccounts.find((s) => s.keyFile);
     if (firstWithKey) result.serviceAccount = { email: firstWithKey.email, keyFile: firstWithKey.keyFile! };
+
+    // Keyless auth: federate the target repo to each created SA. This is the
+    // preferred path when key creation is blocked, and works regardless.
+    if (options.wif) {
+      const wifResults: WifResult[] = [];
+      for (const sa of result.serviceAccounts) {
+        wifResults.push(
+          await setupGithubWif(
+            auth,
+            {
+              projectId,
+              projectNumber,
+              serviceAccountEmail: sa.email,
+              repo: options.wif.repo,
+              outputDir,
+            },
+            log,
+          ),
+        );
+      }
+      result.wif = wifResults;
+    }
   }
 
   if (options.credentials.oauthClient) {

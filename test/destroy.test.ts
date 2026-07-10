@@ -35,6 +35,35 @@ function stub(keyDelete: ReturnType<typeof mock.fn>, projDelete: ReturnType<type
   mock.method(google, 'cloudresourcemanager', () => ({ projects: { delete: projDelete } }) as never);
 }
 
+// A fake IAM client with no SA keys but one WIF pool (one provider).
+function fakeIamWithWif(poolDelete: ReturnType<typeof mock.fn>) {
+  return {
+    projects: {
+      serviceAccounts: {
+        list: async () => ({ data: { accounts: [] } }),
+        keys: { list: async () => ({ data: { keys: [] } }), delete: mock.fn(async () => ({ data: {} })) },
+      },
+      locations: {
+        workloadIdentityPools: {
+          list: async () => ({
+            data: { workloadIdentityPools: [{ name: 'projects/1/locations/global/workloadIdentityPools/gh-pool' }] },
+          }),
+          providers: {
+            list: async () => ({
+              data: {
+                workloadIdentityPoolProviders: [
+                  { name: 'projects/1/locations/global/workloadIdentityPools/gh-pool/providers/gh-x' },
+                ],
+              },
+            }),
+          },
+          delete: poolDelete,
+        },
+      },
+    },
+  };
+}
+
 afterEach(() => mock.restoreAll());
 
 test('keys-only revokes the static key but does NOT delete the project', async () => {
@@ -76,6 +105,36 @@ test('dry-run (no --apply) mutates nothing', async () => {
 
   assert.equal(keyDelete.mock.callCount(), 0);
   assert.equal(projDelete.mock.callCount(), 0);
+  assert.equal(res.dryRun, true);
+});
+
+test('tears down WIF pools — even in keys-only mode (a standing credential)', async () => {
+  const poolDelete = mock.fn(async () => ({ data: {} }));
+  mock.method(google, 'iam', () => fakeIamWithWif(poolDelete) as never);
+  const projDelete = mock.fn(async () => ({ data: {} }));
+  mock.method(google, 'cloudresourcemanager', () => ({ projects: { delete: projDelete } }) as never);
+
+  const res = await destroyProjects({
+    projectIds: ['seed-test-x'],
+    keysOnly: true,
+    apply: true,
+    auth: {} as never,
+  });
+
+  assert.equal(poolDelete.mock.callCount(), 1, 'the WIF pool is torn down');
+  assert.equal(projDelete.mock.callCount(), 0, 'keys-only must not delete the project');
+  assert.deepEqual(res.projects[0]!.wifPoolsDeleted, ['gh-pool']);
+});
+
+test('dry-run lists WIF pools but deletes nothing', async () => {
+  const poolDelete = mock.fn(async () => ({ data: {} }));
+  mock.method(google, 'iam', () => fakeIamWithWif(poolDelete) as never);
+  mock.method(google, 'cloudresourcemanager', () => ({ projects: { delete: mock.fn() } }) as never);
+
+  const res = await destroyProjects({ projectIds: ['seed-test-x'], auth: {} as never });
+
+  assert.equal(poolDelete.mock.callCount(), 0);
+  assert.deepEqual(res.projects[0]!.wifPoolsDeleted, ['gh-pool']);
   assert.equal(res.dryRun, true);
 });
 

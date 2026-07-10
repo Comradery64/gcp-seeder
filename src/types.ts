@@ -35,6 +35,55 @@ export interface ServiceAccountSpec {
   dwdScopes?: string[];
 }
 
+/**
+ * A keyless-auth target for Workload Identity Federation. Only GitHub OIDC is
+ * supported today; `provider` is kept explicit so other OIDC providers can be
+ * added without changing the flag shape.
+ */
+export interface WifTarget {
+  provider: 'github';
+  /** "owner/repo" whose GitHub Actions OIDC tokens may impersonate the SA. */
+  repo: string;
+}
+
+/** The Workload Identity Federation resources a seed run created (or reused). */
+export interface WifResult {
+  /** Workload identity pool id. */
+  poolId: string;
+  /** OIDC provider id within the pool. */
+  providerId: string;
+  /**
+   * Full provider resource name (numeric project form) — paste this as
+   * `workload_identity_provider` in `google-github-actions/auth`.
+   */
+  providerResourceName: string;
+  /** SA that federated principals may impersonate. */
+  serviceAccountEmail: string;
+  /** "owner/repo" the provider is locked to. */
+  repo: string;
+  /** Path to the written `github-actions-auth.yml` snippet, if `outputDir` was set. */
+  workflowSnippetFile?: string;
+}
+
+/** An OIDC provider inside a workload identity pool (as seen by audit/destroy). */
+export interface WifProviderInfo {
+  providerId: string;
+  displayName?: string;
+  /** OIDC issuer this provider trusts, e.g. GitHub's token issuer. */
+  issuerUri?: string;
+  /** CEL condition scoping which tokens are accepted (e.g. a specific repo). */
+  attributeCondition?: string;
+  disabled?: boolean;
+}
+
+/** A workload identity pool and its providers (as seen by audit/destroy). */
+export interface WifPoolInfo {
+  poolId: string;
+  displayName?: string;
+  disabled?: boolean;
+  providers: WifProviderInfo[];
+}
+
 /** Which credential artifacts the seeder should produce. */
 export interface CredentialTargets {
   /**
@@ -73,6 +122,12 @@ export interface SeedOptions {
    * `credentials.serviceAccount`. Use for multi-SA / least-privilege setups.
    */
   serviceAccounts?: ServiceAccountSpec[];
+  /**
+   * Set up keyless auth (Workload Identity Federation) for the created service
+   * account(s) instead of — or alongside — a downloadable key. Requires at
+   * least one service account to bind to. Only GitHub OIDC is supported today.
+   */
+  wif?: WifTarget;
   /**
    * Support email shown on the OAuth consent screen. Required when
    * `credentials.oauthClient` is true.
@@ -135,6 +190,8 @@ export interface ProjectAudit {
   /** False if we couldn't list service accounts (no permission / not active). */
   accessible: boolean;
   serviceAccounts: ServiceAccountAudit[];
+  /** Workload identity federation pools found in the project (keyless-auth surface). */
+  wifPools: WifPoolInfo[];
 }
 
 export interface AuditReport {
@@ -148,13 +205,27 @@ export interface AuditReport {
    * client ids to verify by hand. We list SAs that hold a key (DWD is inert without one).
    */
   dwdCheckList: Array<{ projectId: string; serviceAccount: string; clientId: string }>;
+  /**
+   * Flat list of every workload-identity OIDC provider found — the keyless-auth
+   * equivalent of `staticKeys`. One row per provider.
+   */
+  wifProviders: Array<{
+    projectId: string;
+    poolId: string;
+    providerId: string;
+    issuerUri?: string;
+    attributeCondition?: string;
+  }>;
   warnings: string[];
 }
 
 export interface DestroyOptions {
   /** REQUIRED. Explicit project ids to tear down — never discovered or wildcarded. */
   projectIds: string[];
-  /** Only revoke static SA keys; keep the project and service accounts. Default false. */
+  /**
+   * Revoke standing credentials (static SA keys + WIF pools) but keep the
+   * project and service accounts. Default false.
+   */
   keysOnly?: boolean;
   /** Actually perform deletions. Default false (dry-run). */
   apply?: boolean;
@@ -174,6 +245,8 @@ export interface ProjectDestroyResult {
   /** "email:keyId" entries that were deleted (or would be, in dry-run). */
   keysDeleted: string[];
   serviceAccountsAffected: string[];
+  /** Workload identity pool ids torn down (or would be, in dry-run). */
+  wifPoolsDeleted: string[];
   projectDeleted: boolean;
   /** Client ids whose DWD grants must be removed by hand (no API for it). */
   dwdClientIds: string[];
@@ -226,6 +299,11 @@ export interface SeedResult {
   oauthClient?: {
     clientSecretsFile: string;
   };
+  /**
+   * Keyless-auth (Workload Identity Federation) setup, if `--wif` was used.
+   * One entry per service account bound to the target repo.
+   */
+  wif?: WifResult[];
   /** Non-fatal problems (e.g. OAuth client could not be created automatically). */
   warnings: string[];
 }

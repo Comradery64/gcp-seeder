@@ -1,6 +1,7 @@
 import { google } from 'googleapis';
 import type { AuthClient } from 'google-auth-library';
 import { resolveAuth } from './auth.js';
+import { listWifPools } from './wif.js';
 import type {
   AuditOptions,
   AuditReport,
@@ -63,10 +64,20 @@ async function auditProject(
     orphanCandidate: flagPatterns.some((rx) => rx.test(projectId)),
     accessible: true,
     serviceAccounts: [],
+    wifPools: [],
   };
 
   // Only ACTIVE projects can be meaningfully scanned for service accounts.
   if (audit.lifecycleState && audit.lifecycleState !== 'ACTIVE') return audit;
+
+  // Keyless-auth surface: list any workload identity pools. Independent of the
+  // SA scan and best-effort — the WIF API may be disabled or access-restricted,
+  // in which case we simply report no pools rather than failing the whole scan.
+  try {
+    audit.wifPools = await listWifPools(auth, projectId);
+  } catch {
+    // WIF API off / insufficient permission — leave wifPools empty.
+  }
 
   const iam = google.iam({ version: 'v1', auth: auth as never });
   try {
@@ -142,10 +153,22 @@ export async function auditCloud(options: AuditOptions = {}): Promise<AuditRepor
   const staticKeys: AuditReport['staticKeys'] = [];
   const dwdSeen = new Set<string>();
   const dwdCheckList: AuditReport['dwdCheckList'] = [];
+  const wifProviders: AuditReport['wifProviders'] = [];
   const warnings: string[] = [];
 
   for (const a of audits) {
     if (!a.accessible) warnings.push(`No access to service accounts in ${a.projectId} (skipped).`);
+    for (const pool of a.wifPools) {
+      for (const prov of pool.providers) {
+        wifProviders.push({
+          projectId: a.projectId,
+          poolId: pool.poolId,
+          providerId: prov.providerId,
+          issuerUri: prov.issuerUri,
+          attributeCondition: prov.attributeCondition,
+        });
+      }
+    }
     for (const sa of a.serviceAccounts) {
       for (const k of sa.userManagedKeys) {
         staticKeys.push({
@@ -163,5 +186,5 @@ export async function auditCloud(options: AuditOptions = {}): Promise<AuditRepor
     }
   }
 
-  return { scannedProjects: projects.length, projects: audits, staticKeys, dwdCheckList, warnings };
+  return { scannedProjects: projects.length, projects: audits, staticKeys, dwdCheckList, wifProviders, warnings };
 }
