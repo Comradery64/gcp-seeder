@@ -11,3 +11,5 @@ service-account*.json
 credentials/
 .env
 .env.local
+.frugal-fable/
+PLAN.md

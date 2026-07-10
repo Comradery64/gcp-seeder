@@ -91,6 +91,62 @@ test('projectIds restricts the scan and skips the project listing', async () => 
   assert.equal(listSpy.mock.callCount(), 0, 'must not list all projects when ids are given');
 });
 
+test('surfaces workload identity pools + providers (keyless-auth audit)', async () => {
+  const projects = [{ projectId: 'seed-wif', projectNumber: '9', lifecycleState: 'ACTIVE' }];
+  mock.method(google, 'cloudresourcemanager', () => crmWith(projects) as never);
+  mock.method(google, 'iam', () => ({
+    projects: {
+      serviceAccounts: {
+        list: async () => ({ data: { accounts: [] } }),
+        keys: { list: async () => ({ data: { keys: [] } }) },
+      },
+      locations: {
+        workloadIdentityPools: {
+          list: async () => ({
+            data: {
+              workloadIdentityPools: [
+                { name: 'projects/9/locations/global/workloadIdentityPools/gh-pool', displayName: 'GitHub Actions' },
+              ],
+            },
+          }),
+          providers: {
+            list: async () => ({
+              data: {
+                workloadIdentityPoolProviders: [
+                  {
+                    name: 'projects/9/locations/global/workloadIdentityPools/gh-pool/providers/gh-acme-widgets',
+                    oidc: { issuerUri: 'https://token.actions.githubusercontent.com' },
+                    attributeCondition: "assertion.repository == 'acme/widgets'",
+                  },
+                ],
+              },
+            }),
+          },
+        },
+      },
+    },
+  }) as never);
+
+  const r = await auditCloud({ auth: {} as never });
+
+  assert.equal(r.wifProviders.length, 1);
+  assert.equal(r.wifProviders[0]!.projectId, 'seed-wif');
+  assert.equal(r.wifProviders[0]!.poolId, 'gh-pool');
+  assert.equal(r.wifProviders[0]!.providerId, 'gh-acme-widgets');
+  assert.match(r.wifProviders[0]!.attributeCondition!, /acme\/widgets/);
+  // Structured per-project view is populated too.
+  assert.equal(r.projects[0]!.wifPools[0]!.providers.length, 1);
+});
+
+test('a WIF-less mock (no locations API) audits cleanly with no providers', async () => {
+  const projects = [{ projectId: 'seed-xyz', lifecycleState: 'ACTIVE' }];
+  mock.method(google, 'cloudresourcemanager', () => crmWith(projects) as never);
+  mock.method(google, 'iam', () => fakeIam() as never); // fakeIam has no `locations`
+  const r = await auditCloud({ auth: {} as never });
+  assert.deepEqual(r.wifProviders, []);
+  assert.deepEqual(r.projects[0]!.wifPools, []);
+});
+
 test('custom flagPatterns override the defaults', async () => {
   const projects = [{ projectId: 'tmp-1', lifecycleState: 'ACTIVE' }, { projectId: 'keep-1', lifecycleState: 'ACTIVE' }];
   mock.method(google, 'cloudresourcemanager', () => crmWith(projects) as never);

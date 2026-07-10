@@ -6,6 +6,7 @@ import { auditCloud } from './audit.js';
 import { destroyProjects } from './destroy.js';
 import { findGcloud, hasAdc, installGcloud, runAdcLogin } from './gcloud.js';
 import { generateProjectId, seedProject } from './seeder.js';
+import { parseWifTarget } from './wif.js';
 import type { AuditReport, CredentialTargets, DestroyResult, SeedResult, ServiceAccountSpec } from './types.js';
 
 const ALL_PRESETS = [...Object.keys(PRESETS), ...Object.keys(PROVISIONING_PRESETS)];
@@ -30,6 +31,7 @@ program
   .option('--service-account', 'Create a single default service account + key')
   .option('--service-accounts <names>', 'Create one named service account + key per comma-separated name')
   .option('--dwd-scopes <csv>', 'OAuth scopes to surface for domain-wide delegation on the created SAs')
+  .option('--wif <target>', 'Keyless GitHub Actions auth via Workload Identity Federation, e.g. github:owner/repo')
   .option('--oauth-client', 'Create an OAuth client + consent screen')
   .option('--support-email <email>', 'Consent-screen support email (for --oauth-client)')
   .option('--output-dir <dir>', 'Where to write credentials', './credentials')
@@ -61,7 +63,7 @@ program
   .command('destroy')
   .description('Tear down explicitly-named projects (revoke static keys + soft-delete). Dry-run by default.')
   .requiredOption('--project <id...>', 'Project id(s) to tear down (required, explicit — no wildcards)')
-  .option('--keys-only', 'Only revoke static SA keys; keep the project + service accounts')
+  .option('--keys-only', 'Revoke standing credentials (static SA keys + WIF pools); keep the project + service accounts')
   .option('--apply', 'Actually delete (default is a dry-run)')
   .option('--force', "Allow projects that don't match an orphan pattern (gyb-project-*/seed-*)")
   .option('-y, --yes', 'Skip the interactive confirmation (for scripts)')
@@ -87,8 +89,11 @@ program
       return;
     }
     if (!opts.yes) {
+      const keyCount = plan.projects.reduce((n, p) => n + p.keysDeleted.length, 0);
+      const poolCount = plan.projects.reduce((n, p) => n + p.wifPoolsDeleted.length, 0);
       const ok = await confirm({
-        message: `This will PERMANENTLY revoke ${plan.projects.reduce((n, p) => n + p.keysDeleted.length, 0)} key(s)` +
+        message: `This will PERMANENTLY revoke ${keyCount} key(s)` +
+          `${poolCount ? ` and ${poolCount} WIF pool(s)` : ''}` +
           `${opts.keysOnly ? '' : ` and soft-delete ${actionable.length} project(s)`}. Proceed?`,
         default: false,
       });
@@ -141,6 +146,7 @@ interface CliOptions {
   serviceAccount?: boolean;
   serviceAccounts?: string;
   dwdScopes?: string;
+  wif?: string;
   oauthClient?: boolean;
   supportEmail?: string;
   outputDir: string;
@@ -181,6 +187,13 @@ async function run(opts: CliOptions): Promise<void> {
     credentials = await resolveCredentials(opts, interactive);
   }
 
+  // Keyless auth needs a service account to bind. If --wif is used without any
+  // SA flag/preset, imply a single default SA so the federation has a target.
+  const wif = opts.wif ? parseWifTarget(opts.wif) : undefined;
+  if (wif && serviceAccounts.length === 0 && !credentials.serviceAccount) {
+    credentials = { ...credentials, serviceAccount: true };
+  }
+
   let supportEmail = opts.supportEmail;
   if (credentials.oauthClient && !supportEmail && interactive) {
     supportEmail = await input({
@@ -199,6 +212,7 @@ async function run(opts: CliOptions): Promise<void> {
   console.log(`  project       ${projectId}`);
   console.log(`  apis          ${apis.length ? apis.join(', ') : '(none)'}`);
   console.log(`  service acct  ${saSummary}`);
+  console.log(`  keyless (wif) ${wif ? `yes (github:${wif.repo})` : 'no'}`);
   console.log(`  oauth client  ${credentials.oauthClient ? 'yes' : 'no'}`);
   console.log(`  output dir    ${opts.outputDir}\n`);
 
@@ -214,6 +228,7 @@ async function run(opts: CliOptions): Promise<void> {
     apis,
     credentials,
     serviceAccounts,
+    wif,
     supportEmail,
     outputDir: opts.outputDir,
   });
@@ -232,6 +247,7 @@ async function run(opts: CliOptions): Promise<void> {
   if (result.oauthClient) console.log(`  OAuth:    ${result.oauthClient.clientSecretsFile}`);
   for (const w of result.warnings) console.warn(`  ⚠ ${w}`);
 
+  printWifGuidance(result);
   printDwdGuidance(result, notes);
 
   console.log(
@@ -244,6 +260,22 @@ async function run(opts: CliOptions): Promise<void> {
  * so we hand the user the exact client id + scope CSV to paste into the Admin
  * console — turning research into one copy-paste.
  */
+/**
+ * Print the keyless-CI setup. The provider resource name and SA email are
+ * public config (no secrets) — safe to echo and paste straight into a workflow.
+ */
+function printWifGuidance(result: SeedResult): void {
+  if (!result.wif?.length) return;
+  console.log('\n🔑 Keyless GitHub Actions auth (Workload Identity Federation) — no key to leak:');
+  for (const w of result.wif) {
+    console.log(`\n  • ${w.serviceAccountEmail}  (repo ${w.repo})`);
+    console.log(`      workload_identity_provider: ${w.providerResourceName}`);
+    if (w.workflowSnippetFile) console.log(`      snippet: ${w.workflowSnippetFile}`);
+  }
+  console.log('\n  Add to your workflow job:  permissions: { id-token: write }');
+  console.log('  Then use google-github-actions/auth@v2 with the values above.');
+}
+
 function printDwdGuidance(result: SeedResult, notes?: string[]): void {
   if (!result.dwdGrants?.length) return;
   console.log('\n⚠ Manual step — authorize domain-wide delegation (no API can do this):');
@@ -364,6 +396,15 @@ function printAuditReport(r: AuditReport): void {
     }
   }
 
+  if (r.wifProviders.length) {
+    console.log(`\n🔑 Workload Identity Federation providers (${r.wifProviders.length}) — keyless auth:`);
+    for (const w of r.wifProviders) {
+      console.log(`  • ${w.poolId}/${w.providerId}  (project ${w.projectId})`);
+      if (w.issuerUri) console.log(`      issuer:    ${w.issuerUri}`);
+      if (w.attributeCondition) console.log(`      condition: ${w.attributeCondition}`);
+    }
+  }
+
   if (r.warnings.length) {
     console.log('\nNotes:');
     for (const w of r.warnings) console.log(`  - ${w}`);
@@ -386,6 +427,7 @@ function printDestroyResult(r: DestroyResult): void {
     } else {
       for (const k of p.keysDeleted) console.log(`      ${did} revoke key ${k}`);
     }
+    for (const pool of p.wifPoolsDeleted) console.log(`      ${did} delete WIF pool ${pool}`);
     if (!r.keysOnly) console.log(`      ${did} soft-delete the project`);
     p.dwdClientIds.forEach((c) => dwd.add(c));
   }

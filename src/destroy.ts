@@ -1,6 +1,7 @@
 import { google } from 'googleapis';
 import type { AuthClient } from 'google-auth-library';
 import { resolveAuth } from './auth.js';
+import { deleteWifPool, listWifPools } from './wif.js';
 import type { DestroyOptions, DestroyResult, ProjectDestroyResult } from './types.js';
 
 const DEFAULT_FLAG_PATTERNS = ['gyb-project-*', 'seed-*'];
@@ -44,6 +45,7 @@ export async function destroyProjects(options: DestroyOptions): Promise<DestroyR
       matchedPattern,
       keysDeleted: [],
       serviceAccountsAffected: [],
+      wifPoolsDeleted: [],
       projectDeleted: false,
       dwdClientIds: [],
     };
@@ -104,6 +106,26 @@ export async function destroyProjects(options: DestroyOptions): Promise<DestroyR
         }
         r.keysDeleted.push(`${saEmail}:${keyId}`);
       }
+    }
+
+    // Tear down keyless-auth (WIF) pools — a standing credential path, so it's
+    // revoked in keys-only mode too. Best-effort: if the WIF API is off or
+    // access-restricted, there's simply nothing to remove. Pool deletion is a
+    // soft-delete (~30-day recovery), consistent with project deletion.
+    let pools: Awaited<ReturnType<typeof listWifPools>> = [];
+    try {
+      pools = await listWifPools(auth, projectId);
+    } catch {
+      // WIF API off / insufficient permission — nothing to tear down.
+    }
+    for (const pool of pools) {
+      if (apply) {
+        log(`  deleting WIF pool ${pool.poolId} (${pool.providers.length} provider(s))…`);
+        await deleteWifPool(auth, projectId, pool.poolId);
+      } else {
+        log(`  [dry-run] would delete WIF pool ${pool.poolId} (${pool.providers.length} provider(s))`);
+      }
+      r.wifPoolsDeleted.push(pool.poolId);
     }
 
     if (!keysOnly) {
