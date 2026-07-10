@@ -1,7 +1,7 @@
 # gcp-seeder — Expansion Plan (handoff document)
 
 **Written:** 2026-07-08. **For:** a fresh Claude Code session picking this up with zero chat context.
-**Repo:** `/Users/alan.livshin/Dev/Work/Google-Cloud-Seeder` (npm: `gcp-seeder`, v0.3.1, Apache-2.0, author `Comradery64`).
+**Repo:** `gcp-seeder` (npm: `gcp-seeder`, v0.3.1, Apache-2.0, author `Comradery64`).
 
 ## Why this plan exists
 
