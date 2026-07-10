@@ -192,6 +192,65 @@ test('seed --wif reuses an existing pool/provider (409) instead of failing', asy
   assert.equal(setIamPolicy.mock.callCount(), 1);
 });
 
+test('seed --wif retries pool creation while iam.googleapis.com is still propagating', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  mockCoreApis();
+
+  const saCreate = mock.fn(async () => ({
+    data: { name: 'projects/p/serviceAccounts/ci', email: 'ci@p.iam.gserviceaccount.com', uniqueId: '777' },
+  }));
+  const keyCreate = mock.fn(async () => ({ data: { privateKeyData: Buffer.from('{}').toString('base64') } }));
+
+  // The IAM WIF API often 403s for ~30-90s right after serviceusage.enable
+  // reports it enabled. First pool-create attempt fails with that exact shape;
+  // the second succeeds — the seeder must retry, not abort.
+  let poolAttempts = 0;
+  const poolCreate = mock.fn(async () => {
+    poolAttempts += 1;
+    if (poolAttempts === 1) {
+      throw Object.assign(
+        new Error("Permission 'iam.workloadIdentityPools.create' denied on resource (or it may not exist)."),
+        { code: 403 },
+      );
+    }
+    return { data: { name: 'op/pool' } };
+  });
+  const getIamPolicy = mock.fn(async () => ({ data: { bindings: [], etag: 'e0' } }));
+  const setIamPolicy = mock.fn(async () => ({ data: {} }));
+
+  mock.method(google, 'iam', () => ({
+    projects: {
+      serviceAccounts: { create: saCreate, keys: { create: keyCreate }, getIamPolicy, setIamPolicy },
+      locations: {
+        workloadIdentityPools: {
+          create: poolCreate,
+          operations: { get: mock.fn(async () => ({ data: { done: true } })) },
+          providers: {
+            create: mock.fn(async () => ({ data: { name: 'op/prov' } })),
+            operations: { get: mock.fn(async () => ({ data: { done: true } })) },
+          },
+        },
+      },
+    },
+  }) as never);
+
+  const res = await drain(
+    seedProject({
+      projectId: 'seed-wif-4',
+      apis: [],
+      credentials: { serviceAccount: true, oauthClient: false },
+      wif: { provider: 'github', repo: 'acme/widgets' },
+      outputDir: '/tmp/should-not-matter',
+      auth: {} as never,
+      logger: () => {},
+    }),
+  );
+
+  assert.equal(poolAttempts, 2, 'pool creation was retried after the propagation 403');
+  assert.equal(res.wif?.length, 1);
+  assert.equal(setIamPolicy.mock.callCount(), 1);
+});
+
 test('seed --wif without any service account fails before creating anything', async () => {
   await assert.rejects(
     seedProject({
