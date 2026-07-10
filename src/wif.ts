@@ -111,6 +111,36 @@ function isAlreadyExists(err: unknown): boolean {
   return code === 409 || /already exists/i.test(msg);
 }
 
+/**
+ * True when a call was denied because `iam.googleapis.com`'s workload-identity
+ * sub-resources haven't finished propagating yet. Observed in practice: right
+ * after `serviceusage.enable` reports the API enabled, pool/provider creation
+ * can still 403 with this exact message for ~30-90s. Distinct from a real
+ * permissions problem, which persists across retries.
+ */
+function isApiNotYetPropagated(err: unknown): boolean {
+  const code = (err as { code?: number }).code;
+  const msg = err instanceof Error ? err.message : String(err);
+  return code === 403 && /denied on resource|or it may not exist/i.test(msg);
+}
+
+/** Retry an IAM call while the just-enabled API is still propagating. */
+async function withPropagationRetry<T>(
+  fn: () => Promise<T>,
+  log: (m: string) => void,
+  { attempts = 10, intervalMs = 8_000 } = {},
+): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!isApiNotYetPropagated(err) || attempt >= attempts) throw err;
+      log('  iam.googleapis.com still propagating — retrying…');
+      await sleep(intervalMs);
+    }
+  }
+}
+
 export interface SetupGithubWifOptions {
   projectId: string;
   /** Numeric project number — required for the principalSet + snippet resource names. */
@@ -153,14 +183,18 @@ export async function setupGithubWif(
   // 1. Workload identity pool.
   log(`Creating workload identity pool "${poolId}"…`);
   try {
-    const op = await iam.projects.locations.workloadIdentityPools.create({
-      parent: locationParent,
-      workloadIdentityPoolId: poolId,
-      requestBody: {
-        displayName: 'GitHub Actions',
-        description: 'Keyless CI auth created by gcp-seeder',
-      },
-    });
+    const op = await withPropagationRetry(
+      () =>
+        iam.projects.locations.workloadIdentityPools.create({
+          parent: locationParent,
+          workloadIdentityPoolId: poolId,
+          requestBody: {
+            displayName: 'GitHub Actions',
+            description: 'Keyless CI auth created by gcp-seeder',
+          },
+        }),
+      log,
+    );
     await waitForIamOperation(
       async () => (await iam.projects.locations.workloadIdentityPools.operations.get({ name: op.data.name! })).data,
       log,
@@ -175,20 +209,24 @@ export async function setupGithubWif(
   //    token this pool trusts — the condition is the security boundary.
   log(`Creating OIDC provider "${providerId}" for ${repo}…`);
   try {
-    const op = await iam.projects.locations.workloadIdentityPools.providers.create({
-      parent: poolName,
-      workloadIdentityPoolProviderId: providerId,
-      requestBody: {
-        displayName: repo.slice(0, 32),
-        oidc: { issuerUri: GITHUB_OIDC_ISSUER },
-        attributeMapping: {
-          'google.subject': 'assertion.sub',
-          'attribute.repository': 'assertion.repository',
-          'attribute.repository_owner': 'assertion.repository_owner',
-        },
-        attributeCondition: `assertion.repository == '${repo}'`,
-      },
-    });
+    const op = await withPropagationRetry(
+      () =>
+        iam.projects.locations.workloadIdentityPools.providers.create({
+          parent: poolName,
+          workloadIdentityPoolProviderId: providerId,
+          requestBody: {
+            displayName: repo.slice(0, 32),
+            oidc: { issuerUri: GITHUB_OIDC_ISSUER },
+            attributeMapping: {
+              'google.subject': 'assertion.sub',
+              'attribute.repository': 'assertion.repository',
+              'attribute.repository_owner': 'assertion.repository_owner',
+            },
+            attributeCondition: `assertion.repository == '${repo}'`,
+          },
+        }),
+      log,
+    );
     await waitForIamOperation(
       async () =>
         (await iam.projects.locations.workloadIdentityPools.providers.operations.get({ name: op.data.name! })).data,
