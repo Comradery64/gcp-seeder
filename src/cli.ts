@@ -9,6 +9,7 @@ import { generateProjectId, seedProject } from './seeder.js';
 import { sweepProjects } from './sweep.js';
 import { rotateServiceAccountKey } from './rotate.js';
 import { parseWifTarget } from './wif.js';
+import { VERSION } from './version.js';
 import type { AuditReport, CredentialTargets, DestroyResult, SeedResult, ServiceAccountSpec, SweepResult } from './types.js';
 
 const ALL_PRESETS = [...Object.keys(PRESETS), ...Object.keys(PROVISIONING_PRESETS)];
@@ -20,7 +21,7 @@ const program = new Command();
 program
   .name('gcp-seeder')
   .description('Bootstrap a fully wired Google Cloud project in one command.')
-  .version('0.1.0');
+  .version(VERSION);
 
 program
   .command('seed', { isDefault: true })

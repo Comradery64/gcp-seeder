@@ -7,6 +7,7 @@ import { rotateServiceAccountKey } from './rotate.js';
 import { seedProject } from './seeder.js';
 import { sweepProjects } from './sweep.js';
 import { parseWifTarget } from './wif.js';
+import { VERSION } from './version.js';
 
 /**
  * The MCP stdio transport uses **stdout** as the protocol channel, so any
@@ -154,7 +155,7 @@ export const MCP_TOOLS: McpTool[] = [
 
 /** Build the MCP server with all tools registered (no transport attached yet). */
 export function buildMcpServer(): McpServer {
-  const server = new McpServer({ name: 'gcp-seeder', version: '0.3.1' });
+  const server = new McpServer({ name: 'gcp-seeder', version: VERSION });
   for (const tool of MCP_TOOLS) {
     server.registerTool(
       tool.name,
