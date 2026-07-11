@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { writeFile } from 'node:fs/promises';
 import { checkbox, confirm, input, select, Separator } from '@inquirer/prompts';
 import { Command } from 'commander';
 import { API_CATALOG, PRESETS, PROVISIONING_PRESETS } from './apis.js';
@@ -9,6 +10,7 @@ import { generateProjectId, seedProject } from './seeder.js';
 import { sweepProjects } from './sweep.js';
 import { rotateServiceAccountKey } from './rotate.js';
 import { parseWifTarget } from './wif.js';
+import { exportProjectTerraform } from './export.js';
 import { VERSION } from './version.js';
 import type { AuditReport, CredentialTargets, DestroyResult, SeedResult, ServiceAccountSpec, SweepResult } from './types.js';
 
@@ -238,6 +240,26 @@ program
       if (result.newKeyFile) console.log(`  New key:  ${result.newKeyFile}`);
       if (result.retiredKeyIds.length) console.log(`  Retired:  ${result.retiredKeyIds.join(', ')}`);
       for (const w of result.warnings) console.warn(`  ⚠ ${w}`);
+    }
+  });
+
+program
+  .command('export')
+  .description('Read a project and emit Terraform HCL for its gcp-seeder-managed surface (read-only).')
+  .requiredOption('--project <id>', 'Project to export')
+  .option('--terraform', 'Emit Terraform HCL (the default and only format today)')
+  .option('-o, --output <file>', 'Write HCL to a file instead of stdout')
+  .action(async (opts: { project: string; terraform?: boolean; output?: string }) => {
+    // When HCL goes to stdout, keep it clean — route progress to stderr.
+    const res = await exportProjectTerraform({
+      projectId: opts.project,
+      logger: opts.output ? log : (m) => console.error(m),
+    });
+    if (opts.output) {
+      await writeFile(opts.output, res.hcl, 'utf8');
+      console.log(`✓ Wrote ${opts.output} (${res.counts.services} API(s), ${res.counts.serviceAccounts} SA(s), ${res.counts.wifPools} WIF pool(s)).`);
+    } else {
+      process.stdout.write(res.hcl);
     }
   });
 

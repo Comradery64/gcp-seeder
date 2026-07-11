@@ -355,6 +355,20 @@ export interface RotateResult {
   warnings: string[];
 }
 
+export interface ExportOptions {
+  /** Project to read and render as Terraform. */
+  projectId: string;
+  auth?: AuthClient;
+  logger?: (message: string) => void;
+}
+
+export interface ExportResult {
+  projectId: string;
+  /** The rendered Terraform HCL. */
+  hcl: string;
+  counts: { services: number; serviceAccounts: number; wifPools: number };
+}
+
 /**
  * A domain-wide-delegation authorization the caller must complete by hand.
  * There is no public API to create DWD grants, so the seeder returns the exact

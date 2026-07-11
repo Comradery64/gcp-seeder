@@ -9,6 +9,7 @@ export { destroyProjects } from './destroy.js';
 export { sweepProjects } from './sweep.js';
 export { rotateServiceAccountKey } from './rotate.js';
 export { buildMcpServer, runMcpServer, MCP_TOOLS } from './mcp.js';
+export { exportProjectTerraform } from './export.js';
 export {
   buildSeedLabels,
   parseDuration,
@@ -52,4 +53,6 @@ export type {
   SweepCandidate,
   RotateOptions,
   RotateResult,
+  ExportOptions,
+  ExportResult,
 } from './types.js';
