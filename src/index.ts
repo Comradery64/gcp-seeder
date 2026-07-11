@@ -7,6 +7,7 @@ export { seedProject, generateProjectId } from './seeder.js';
 export { auditCloud } from './audit.js';
 export { destroyProjects } from './destroy.js';
 export { sweepProjects } from './sweep.js';
+export { rotateServiceAccountKey } from './rotate.js';
 export {
   buildSeedLabels,
   parseDuration,
@@ -48,4 +49,6 @@ export type {
   SweepOptions,
   SweepResult,
   SweepCandidate,
+  RotateOptions,
+  RotateResult,
 } from './types.js';

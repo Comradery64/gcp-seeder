@@ -7,6 +7,7 @@ import { destroyProjects } from './destroy.js';
 import { findGcloud, hasAdc, installGcloud, runAdcLogin } from './gcloud.js';
 import { generateProjectId, seedProject } from './seeder.js';
 import { sweepProjects } from './sweep.js';
+import { rotateServiceAccountKey } from './rotate.js';
 import { parseWifTarget } from './wif.js';
 import type { AuditReport, CredentialTargets, DestroyResult, SeedResult, ServiceAccountSpec, SweepResult } from './types.js';
 
@@ -45,12 +46,14 @@ program
   .description('Read-only: find orphan projects, static SA keys, and DWD client ids to check.')
   .option('--project <id...>', 'Restrict the scan to these project ids')
   .option('--flag <pattern...>', 'Glob patterns to mark as orphan candidates (default: gyb-project-*, seed-*)')
+  .option('--max-key-age <duration>', 'Flag user-managed SA keys older than this as stale (e.g. 90d, 1w)')
   .option('--concurrency <n>', 'Max concurrent project scans', (v) => parseInt(v, 10), 8)
   .option('--json', 'Emit the raw report as JSON')
-  .action(async (opts: { project?: string[]; flag?: string[]; concurrency: number; json?: boolean }) => {
+  .action(async (opts: { project?: string[]; flag?: string[]; maxKeyAge?: string; concurrency: number; json?: boolean }) => {
     const report = await auditCloud({
       projectIds: opts.project,
       flagPatterns: opts.flag,
+      maxKeyAge: opts.maxKeyAge,
       concurrency: opts.concurrency,
       logger: opts.json ? undefined : log,
     });
@@ -156,6 +159,58 @@ program
     const result = await sweepProjects({ maxAge: opts.maxAge, flagPatterns: opts.flag, apply: true, logger: log });
     console.log('\n✓ Done.');
     if (result.destroy) printDestroyResult(result.destroy);
+  });
+
+program
+  .command('rotate')
+  .description('Rotate a service account key: mint a new one, then disable + delete the old. Dry-run by default.')
+  .requiredOption('--project <id>', 'Project the service account lives in')
+  .requiredOption('--service-account <email>', 'Service account email whose key(s) to rotate')
+  .option('--key-id <id>', 'Rotate only this key id (default: retire all user-managed keys after minting one)')
+  .option('--output-dir <dir>', 'Where to write the new key', './credentials')
+  .option('--apply', 'Actually mint + retire keys (default is a dry-run)')
+  .option('-y, --yes', 'Skip the interactive confirmation (for scripts)')
+  .action(async (opts: { project: string; serviceAccount: string; keyId?: string; outputDir: string; apply?: boolean; yes?: boolean }) => {
+    // Dry-run pass first so the user sees exactly which keys will be retired.
+    const plan = await rotateServiceAccountKey({
+      projectId: opts.project,
+      serviceAccountEmail: opts.serviceAccount,
+      keyId: opts.keyId,
+      outputDir: opts.outputDir,
+      apply: false,
+      logger: log,
+    });
+
+    if (!opts.apply) {
+      console.log('\nDry-run only. Re-run with --apply to rotate.');
+      return;
+    }
+    if (plan.retiredKeyIds.length === 0 && !opts.keyId) {
+      console.log('\nNo existing user-managed keys — will mint a new key only.');
+    }
+    if (!opts.yes) {
+      const ok = await confirm({
+        message: `This will mint a new key for ${opts.serviceAccount} and PERMANENTLY delete ${plan.retiredKeyIds.length} old key(s). Proceed?`,
+        default: false,
+      });
+      if (!ok) {
+        console.log('Aborted.');
+        return;
+      }
+    }
+
+    const result = await rotateServiceAccountKey({
+      projectId: opts.project,
+      serviceAccountEmail: opts.serviceAccount,
+      keyId: opts.keyId,
+      outputDir: opts.outputDir,
+      apply: true,
+      logger: log,
+    });
+    console.log('\n✓ Done.');
+    if (result.newKeyFile) console.log(`  New key:  ${result.newKeyFile}`);
+    if (result.retiredKeyIds.length) console.log(`  Retired:  ${result.retiredKeyIds.join(', ')}`);
+    for (const w of result.warnings) console.warn(`  ⚠ ${w}`);
   });
 
 program
@@ -429,11 +484,20 @@ function printAuditReport(r: AuditReport): void {
   if (r.staticKeys.length) {
     console.log(`\n⚠ Static service-account keys (${r.staticKeys.length}) — the headline risk:`);
     for (const k of r.staticKeys) {
+      const age = k.ageDays !== undefined ? ` · ${k.ageDays}d old` : '';
       console.log(`  • ${k.serviceAccount}`);
-      console.log(`      project ${k.projectId} · keyId ${k.keyId}${k.createdAt ? ` · created ${k.createdAt}` : ''}`);
+      console.log(`      project ${k.projectId} · keyId ${k.keyId}${k.createdAt ? ` · created ${k.createdAt}` : ''}${age}`);
     }
   } else {
     console.log('\n✓ No static (user-managed) service-account keys found.');
+  }
+
+  if (r.staleKeys.length) {
+    console.log(`\n⏰ Stale keys (${r.staleKeys.length}) past --max-key-age — rotate these:`);
+    for (const k of r.staleKeys) {
+      console.log(`  • ${k.serviceAccount} · keyId ${k.keyId}${k.ageDays !== undefined ? ` (${k.ageDays}d old)` : ''}`);
+      console.log(`      gcp-seeder rotate --project ${k.projectId} --service-account ${k.serviceAccount} --key-id ${k.keyId} --apply`);
+    }
   }
 
   if (r.dwdCheckList.length) {

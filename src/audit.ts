@@ -1,7 +1,7 @@
 import { google } from 'googleapis';
 import type { AuthClient } from 'google-auth-library';
 import { resolveAuth } from './auth.js';
-import { isSeederLabeled } from './labels.js';
+import { isSeederLabeled, parseDuration } from './labels.js';
 import { listWifPools } from './wif.js';
 import type {
   AuditOptions,
@@ -140,6 +140,8 @@ export async function auditCloud(options: AuditOptions = {}): Promise<AuditRepor
   const log = options.logger ?? (() => {});
   const auth = await resolveAuth(options.auth);
   const flagPatterns = (options.flagPatterns ?? DEFAULT_FLAG_PATTERNS).map(globToRegex);
+  const now = options.now ?? new Date();
+  const maxKeyAgeDays = options.maxKeyAge ? parseDuration(options.maxKeyAge) / 86_400_000 : undefined;
 
   let projects: Array<Record<string, string>>;
   if (options.projectIds?.length) {
@@ -155,6 +157,7 @@ export async function auditCloud(options: AuditOptions = {}): Promise<AuditRepor
   );
 
   const staticKeys: AuditReport['staticKeys'] = [];
+  const staleKeys: AuditReport['staleKeys'] = [];
   const dwdSeen = new Set<string>();
   const dwdCheckList: AuditReport['dwdCheckList'] = [];
   const wifProviders: AuditReport['wifProviders'] = [];
@@ -175,12 +178,21 @@ export async function auditCloud(options: AuditOptions = {}): Promise<AuditRepor
     }
     for (const sa of a.serviceAccounts) {
       for (const k of sa.userManagedKeys) {
-        staticKeys.push({
+        const createdMs = k.validAfterTime ? Date.parse(k.validAfterTime) : NaN;
+        const ageDays = Number.isNaN(createdMs)
+          ? undefined
+          : Math.floor((now.getTime() - createdMs) / 86_400_000);
+        const entry = {
           projectId: a.projectId,
           serviceAccount: sa.email,
           keyId: k.keyId,
           createdAt: k.validAfterTime,
-        });
+          ageDays,
+        };
+        staticKeys.push(entry);
+        if (maxKeyAgeDays !== undefined && ageDays !== undefined && ageDays >= maxKeyAgeDays) {
+          staleKeys.push(entry);
+        }
       }
       // DWD is inert without a key, so only flag SAs that actually hold one.
       if (sa.userManagedKeys.length > 0 && sa.clientId && !dwdSeen.has(sa.clientId)) {
@@ -190,5 +202,5 @@ export async function auditCloud(options: AuditOptions = {}): Promise<AuditRepor
     }
   }
 
-  return { scannedProjects: projects.length, projects: audits, staticKeys, dwdCheckList, wifProviders, warnings };
+  return { scannedProjects: projects.length, projects: audits, staticKeys, staleKeys, dwdCheckList, wifProviders, warnings };
 }

@@ -135,10 +135,13 @@ No key is written, nothing secret ends up in your repo, and there's nothing to r
 Read-only sweep of every project your credentials can see. Flags orphan projects, finds **every static service-account key** (the main credential risk), surfaces the OAuth client ids whose domain-wide-delegation grants you should check by hand (no API can list DWD), and lists **Workload Identity Federation providers** (keyless-auth) with the issuer + repo condition each one trusts.
 
 ```bash
-npx gcp-seeder audit              # human-readable report
-npx gcp-seeder audit --json       # machine-readable
-npx gcp-seeder audit --project my-proj-a my-proj-b   # scope to specific projects
+npx gcp-seeder audit                    # human-readable report
+npx gcp-seeder audit --json             # machine-readable
+npx gcp-seeder audit --project a b      # scope to specific projects
+npx gcp-seeder audit --max-key-age 90d  # also flag keys older than 90 days as stale
 ```
+
+With `--max-key-age`, the report adds a **stale keys** section (a subset of the static keys past that age) and prints the exact `rotate` command for each — turning "which keys are overdue?" into copy-paste.
 
 ### Tear down — `destroy`
 
@@ -173,6 +176,18 @@ npx gcp-seeder sweep --max-age 30d   # also sweep owned projects older than 30 d
 ```
 
 `--max-age` catches projects with no `expires` label (e.g. seeded before you adopted TTLs) once they exceed the age you give.
+
+### Rotate — `rotate`
+
+Replace a service account's key without a window where it has none: `rotate` mints a fresh key and writes it to `--output-dir` **first**, then retires the old one in two phases — disable, then delete — so a broken new key is caught before the old one is gone. **Dry-run by default.**
+
+```bash
+npx gcp-seeder rotate --project my-proj --service-account ci@my-proj.iam.gserviceaccount.com          # dry-run
+npx gcp-seeder rotate --project my-proj --service-account ci@my-proj.iam.gserviceaccount.com --apply   # rotate all its keys
+npx gcp-seeder rotate --project my-proj --service-account ci@... --key-id KEYID --apply                # just one key
+```
+
+By default every existing user-managed key is retired once the new one is minted; pass `--key-id` for a single key. If the org blocks key creation (`iam.disableServiceAccountKeyCreation`), nothing is rotated and it points you at keyless auth (`--wif`) instead.
 
 ## Library
 

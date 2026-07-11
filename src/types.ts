@@ -165,6 +165,14 @@ export interface AuditOptions {
   flagPatterns?: string[];
   /** Max concurrent project scans. Default 8. */
   concurrency?: number;
+  /**
+   * Flag user-managed SA keys older than this duration ("90d", "1w") as stale.
+   * When set, the report's `staleKeys` lists every key past this age. Omit to
+   * skip the staleness check (`staleKeys` stays empty).
+   */
+  maxKeyAge?: string;
+  /** Reference "now" for key-age math. Injectable for tests; defaults to the wall clock. */
+  now?: Date;
   /** Pre-authorized cloud-platform auth client. Falls back to ADC. */
   auth?: AuthClient;
   /** Receives progress lines. Default: no-op. */
@@ -206,7 +214,12 @@ export interface AuditReport {
   scannedProjects: number;
   projects: ProjectAudit[];
   /** Flat list of every static (user-managed) SA key found — the headline risk. */
-  staticKeys: Array<{ projectId: string; serviceAccount: string; keyId: string; createdAt?: string }>;
+  staticKeys: Array<{ projectId: string; serviceAccount: string; keyId: string; createdAt?: string; ageDays?: number }>;
+  /**
+   * Subset of `staticKeys` older than `maxKeyAge` — the keys most worth rotating.
+   * Empty unless `maxKeyAge` was set.
+   */
+  staleKeys: Array<{ projectId: string; serviceAccount: string; keyId: string; createdAt?: string; ageDays?: number }>;
   /**
    * SAs worth checking in the Admin console for a domain-wide-delegation grant.
    * DWD cannot be listed via any public API, so the best we can do is surface the
@@ -308,6 +321,38 @@ export interface SweepResult {
   candidates: SweepCandidate[];
   /** Teardown outcome for the selected projects (undefined if none selected). */
   destroy?: DestroyResult;
+}
+
+export interface RotateOptions {
+  /** Project the service account lives in. */
+  projectId: string;
+  /** Service account email whose key(s) to rotate. */
+  serviceAccountEmail: string;
+  /**
+   * Rotate only this key id. Omit to rotate every user-managed key on the SA
+   * (mint one fresh key, then retire all pre-existing ones).
+   */
+  keyId?: string;
+  /** Directory to write the new key into. Defaults to "./credentials". */
+  outputDir?: string;
+  /** Actually mint + retire keys. Default false (dry-run). */
+  apply?: boolean;
+  auth?: AuthClient;
+  logger?: (message: string) => void;
+}
+
+export interface RotateResult {
+  dryRun: boolean;
+  projectId: string;
+  serviceAccountEmail: string;
+  /** The freshly minted key id (undefined in dry-run, or if minting was blocked). */
+  newKeyId?: string;
+  /** Path the new key was written to (undefined in dry-run). */
+  newKeyFile?: string;
+  /** Key ids retired (disabled then deleted), or that would be in dry-run. */
+  retiredKeyIds: string[];
+  /** Non-fatal problems (e.g. key creation blocked by org policy). */
+  warnings: string[];
 }
 
 /**
