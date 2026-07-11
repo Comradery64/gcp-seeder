@@ -128,6 +128,8 @@ steps:
 
 No key is written, nothing secret ends up in your repo, and there's nothing to rotate. `--wif` implies a service account if you didn't ask for one; enable `sts.googleapis.com` and `iamcredentials.googleapis.com` are handled for you. Re-running against the same project reuses the existing pool/provider.
 
+> **Give the binding a minute to propagate.** After `seed --wif` completes, the freshly granted `roles/iam.workloadIdentityUser` binding can take **~1–2 minutes** to propagate on Google's side. A CI run triggered immediately afterward can fail with `iam.serviceAccounts.getAccessToken` denied / *"Unable to acquire impersonated credentials."* — this is confirmed: a live GitHub Actions run right after seeding failed with that exact error, and a retry ~90s later succeeded. If a brand-new setup fails this way, wait a minute or two (or just re-run the workflow once) before treating it as broken. There's nothing the tool can usefully do here — the delay is IAM-side propagation, not something the seed step can block on without adding latency to every run.
+
 > Only `github:owner/repo` is supported today; the `provider:` prefix leaves room for other OIDC providers later.
 
 ### Audit — `audit`
