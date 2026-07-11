@@ -356,21 +356,35 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
     if (options.wif) {
       const wifResults: WifResult[] = [];
       for (const sa of result.serviceAccounts) {
-        wifResults.push(
-          await setupGithubWif(
-            auth,
-            {
-              projectId,
-              projectNumber,
-              serviceAccountEmail: sa.email,
-              repo: options.wif.repo,
-              outputDir,
-            },
-            log,
-          ),
-        );
+        // Don't let a late WIF failure (e.g. missing setIamPolicy permission, or
+        // IAM still propagating) throw and leave a half-provisioned project — the
+        // project, SA, and any created pool/provider are kept; record an
+        // actionable warning. Re-running `seed --wif` is idempotent and finishes.
+        try {
+          wifResults.push(
+            await setupGithubWif(
+              auth,
+              {
+                projectId,
+                projectNumber,
+                serviceAccountEmail: sa.email,
+                repo: options.wif.repo,
+                outputDir,
+              },
+              log,
+            ),
+          );
+        } catch (err) {
+          result.warnings.push(
+            `Workload Identity Federation for ${sa.email} (repo ${options.wif.repo}) did not fully ` +
+              `complete: ${(err as Error).message} The project and service account are kept, along ` +
+              `with any pool/provider already created. Re-run the same \`seed --wif\` command to ` +
+              `finish (it's idempotent), or grant roles/iam.workloadIdentityUser to the repo's ` +
+              `principalSet on ${sa.email} by hand.`,
+          );
+        }
       }
-      result.wif = wifResults;
+      if (wifResults.length) result.wif = wifResults;
     }
   }
 

@@ -251,6 +251,56 @@ test('seed --wif retries pool creation while iam.googleapis.com is still propaga
   assert.equal(setIamPolicy.mock.callCount(), 1);
 });
 
+test('seed --wif warns instead of throwing when the SA binding fails (no half-provisioned project)', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  mockCoreApis();
+
+  const saCreate = mock.fn(async () => ({
+    data: { name: 'projects/p/serviceAccounts/ci', email: 'ci@p.iam.gserviceaccount.com', uniqueId: '777' },
+  }));
+  const keyCreate = mock.fn(async () => ({ data: { privateKeyData: Buffer.from('{}').toString('base64') } }));
+  // Pool + provider create fine, but the caller lacks setIamPolicy on the SA
+  // (a persistent 403, not the propagation shape) — must warn, not abort.
+  const denied = async () => {
+    throw Object.assign(new Error("Permission 'iam.serviceAccounts.setIamPolicy' was denied."), { code: 403 });
+  };
+
+  mock.method(google, 'iam', () => ({
+    projects: {
+      serviceAccounts: { create: saCreate, keys: { create: keyCreate }, getIamPolicy: mock.fn(denied), setIamPolicy: mock.fn(async () => ({ data: {} })) },
+      locations: {
+        workloadIdentityPools: {
+          create: mock.fn(async () => ({ data: { name: 'op/pool' } })),
+          operations: { get: mock.fn(async () => ({ data: { done: true } })) },
+          providers: {
+            create: mock.fn(async () => ({ data: { name: 'op/prov' } })),
+            operations: { get: mock.fn(async () => ({ data: { done: true } })) },
+          },
+        },
+      },
+    },
+  }) as never);
+
+  const res = await drain(
+    seedProject({
+      projectId: 'seed-wif-5',
+      apis: [],
+      credentials: { serviceAccount: true, oauthClient: false },
+      wif: { provider: 'github', repo: 'acme/widgets' },
+      outputDir: '/tmp/should-not-matter',
+      auth: {} as never,
+      logger: () => {},
+    }),
+  ); // must NOT throw
+
+  // The project + SA survive; WIF is not surfaced; an actionable warning explains how to finish.
+  assert.equal(res.projectId, 'seed-wif-5');
+  assert.equal(res.serviceAccounts?.length, 1);
+  assert.equal(res.wif, undefined);
+  assert.ok(res.warnings.some((w) => /Workload Identity Federation .* did not fully complete/.test(w)), 'expected a WIF warning');
+  assert.ok(res.warnings.some((w) => /idempotent/.test(w)), 'warning should mention re-running is idempotent');
+});
+
 test('seed --wif without any service account fails before creating anything', async () => {
   await assert.rejects(
     seedProject({

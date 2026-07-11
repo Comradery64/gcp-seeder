@@ -238,23 +238,27 @@ export async function setupGithubWif(
   }
 
   // 3. Bind the repo's federated principal to the SA (read-modify-write policy).
+  //    A just-created SA can 403 here for the same propagation reason pools do,
+  //    so retry the whole read-modify-write under the same backoff.
   const saResource = `projects/${projectId}/serviceAccounts/${serviceAccountEmail}`;
   const member = repoPrincipalSet(projectNumber, poolId, repo);
   log(`Granting ${WORKLOAD_IDENTITY_USER} to ${repo} on ${serviceAccountEmail}…`);
-  const { data: policy } = await iam.projects.serviceAccounts.getIamPolicy({ resource: saResource });
-  const bindings = policy.bindings ?? [];
-  let binding = bindings.find((b) => b.role === WORKLOAD_IDENTITY_USER);
-  if (!binding) {
-    binding = { role: WORKLOAD_IDENTITY_USER, members: [] };
-    bindings.push(binding);
-  }
-  if (!binding.members?.includes(member)) {
-    binding.members = [...(binding.members ?? []), member];
-  }
-  await iam.projects.serviceAccounts.setIamPolicy({
-    resource: saResource,
-    requestBody: { policy: { ...policy, bindings } },
-  });
+  await withPropagationRetry(async () => {
+    const { data: policy } = await iam.projects.serviceAccounts.getIamPolicy({ resource: saResource });
+    const bindings = policy.bindings ?? [];
+    let binding = bindings.find((b) => b.role === WORKLOAD_IDENTITY_USER);
+    if (!binding) {
+      binding = { role: WORKLOAD_IDENTITY_USER, members: [] };
+      bindings.push(binding);
+    }
+    if (!binding.members?.includes(member)) {
+      binding.members = [...(binding.members ?? []), member];
+    }
+    await iam.projects.serviceAccounts.setIamPolicy({
+      resource: saResource,
+      requestBody: { policy: { ...policy, bindings } },
+    });
+  }, log);
   log('✓ Workload identity binding applied');
 
   const providerResource = providerResourceName(projectNumber, poolId, providerId);
