@@ -12,7 +12,7 @@ function stubApis() {
         data: {
           projectId: 'seed-proj',
           displayName: 'Seed Proj',
-          parent: 'organizations/258794581773',
+          parent: 'organizations/123456789012',
           labels: { 'seeded-by': 'gcp-seeder', 'seeded-at': '2026-07-01' },
         },
       }),
@@ -62,7 +62,7 @@ test('renders Terraform for project, APIs, user SAs, and WIF', async () => {
   // project block with parent + labels
   assert.match(hcl, /resource "google_project" "seed_proj"/);
   assert.match(hcl, /project_id = "seed-proj"/);
-  assert.match(hcl, /org_id = "258794581773"/);
+  assert.match(hcl, /org_id = "123456789012"/);
   assert.match(hcl, /"seeded-by" = "gcp-seeder"/);
 
   // enabled APIs
