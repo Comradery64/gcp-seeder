@@ -147,6 +147,24 @@ test('a WIF-less mock (no locations API) audits cleanly with no providers', asyn
   assert.deepEqual(r.projects[0]!.wifPools, []);
 });
 
+test('flags keys older than --max-key-age as stale', async () => {
+  const projects = [{ projectId: 'gyb-project-abc', lifecycleState: 'ACTIVE' }];
+  mock.method(google, 'cloudresourcemanager', () => crmWith(projects) as never);
+  mock.method(google, 'iam', () => fakeIam() as never); // gyb-project-abc's SA holds a key created 2026-01-01
+
+  const now = new Date('2026-07-10T00:00:00Z'); // ~190 days after 2026-01-01
+  const r = await auditCloud({ maxKeyAge: '90d', now, auth: {} as never });
+
+  assert.equal(r.staticKeys.length, 1);
+  assert.ok(r.staticKeys[0]!.ageDays! >= 180, 'age is computed');
+  assert.equal(r.staleKeys.length, 1, 'key older than 90d is stale');
+  assert.equal(r.staleKeys[0]!.keyId, 'KEYAAA');
+
+  // Without maxKeyAge, staleKeys stays empty even for old keys.
+  const r2 = await auditCloud({ now, auth: {} as never });
+  assert.deepEqual(r2.staleKeys, []);
+});
+
 test('claims label-owned projects even when the id matches no glob', async () => {
   const projects = [
     { projectId: 'custom-name-xyz', lifecycleState: 'ACTIVE', labels: { 'seeded-by': 'gcp-seeder', 'seeded-at': '2026-07-01' } },
@@ -162,6 +180,22 @@ test('claims label-owned projects even when the id matches no glob', async () =>
   assert.equal(ours.labels?.['seeded-by'], 'gcp-seeder');
   // A project with unrelated labels is not claimed.
   assert.equal(r.projects.find((p) => p.projectId === 'other-app')!.orphanCandidate, false);
+});
+
+test('--project mode fetches each project so labels populate (label ownership works)', async () => {
+  const get = mock.fn(async ({ projectId }: { projectId: string }) => ({
+    data: { projectId, lifecycleState: 'ACTIVE', labels: { 'seeded-by': 'gcp-seeder', 'seeded-at': '2026-07-01' } },
+  }));
+  const listSpy = mock.fn(async () => ({ data: { projects: [] } }));
+  mock.method(google, 'cloudresourcemanager', () => ({ projects: { list: listSpy, get } }) as never);
+  mock.method(google, 'iam', () => fakeIam() as never);
+
+  const r = await auditCloud({ projectIds: ['custom-id-1'], auth: {} as never });
+
+  assert.equal(listSpy.mock.callCount(), 0, 'must not list all projects when ids are given');
+  assert.equal(get.mock.callCount(), 1, 'fetches the named project to populate labels');
+  assert.equal(r.projects[0]!.labels?.['seeded-by'], 'gcp-seeder');
+  assert.equal(r.projects[0]!.orphanCandidate, true, 'ownership recognized via label in --project mode');
 });
 
 test('custom flagPatterns override the defaults', async () => {
