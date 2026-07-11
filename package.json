@@ -57,6 +57,7 @@
     "commander": "^12.1.0",
     "google-auth-library": "^9.15.0",
     "googleapis": "^144.0.0",
+    "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

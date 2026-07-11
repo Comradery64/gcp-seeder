@@ -135,6 +135,13 @@ export interface SeedOptions {
    */
   ttl?: string;
   /**
+   * Reconcile mode (used by manifest apply): treat an already-existing project
+   * or service account as success and continue, rather than failing. Existing
+   * service accounts are reused without minting a new key. Default false, which
+   * keeps a plain `seed` failing loudly on a duplicate project id.
+   */
+  reconcile?: boolean;
+  /**
    * Support email shown on the OAuth consent screen. Required when
    * `credentials.oauthClient` is true.
    */

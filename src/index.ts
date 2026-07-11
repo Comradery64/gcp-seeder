@@ -10,6 +10,8 @@ export { sweepProjects } from './sweep.js';
 export { rotateServiceAccountKey } from './rotate.js';
 export { buildMcpServer, runMcpServer, MCP_TOOLS } from './mcp.js';
 export { exportProjectTerraform } from './export.js';
+export { loadManifest, manifestToSeedOptions } from './manifest.js';
+export type { Manifest } from './manifest.js';
 export {
   buildSeedLabels,
   parseDuration,

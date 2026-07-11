@@ -74,13 +74,26 @@ async function createProject(
   displayName: string,
   parent: string | undefined,
   labels: Record<string, string>,
+  reconcile: boolean,
   log: (m: string) => void,
 ): Promise<string> {
   const crm = google.cloudresourcemanager({ version: 'v3', auth: auth as never });
   log(`Creating project "${projectId}"…`);
-  const create = await crm.projects.create({
-    requestBody: { projectId, displayName, parent, labels },
-  });
+  let create;
+  try {
+    create = await crm.projects.create({
+      requestBody: { projectId, displayName, parent, labels },
+    });
+  } catch (err) {
+    // Reconcile (manifest apply): an existing project is not an error — adopt it.
+    if (reconcile && isAlreadyExists(err)) {
+      const { data } = await crm.projects.get({ name: `projects/${projectId}` });
+      const projectNumber = (data.name ?? '').split('/')[1] ?? '';
+      log(`✓ Project "${projectId}" already exists — reusing it (number ${projectNumber || 'unknown'})`);
+      return projectNumber;
+    }
+    throw err;
+  }
   const done = await waitForOperation(
     async () => (await crm.operations.get({ name: create.data.name! })).data,
     log,
@@ -125,24 +138,47 @@ function isKeyCreationBlocked(err: unknown): boolean {
   return /key creation is not allowed|disableServiceAccountKeyCreation/i.test(msg);
 }
 
-/** Create the service account (no key). Returns its email + OAuth client id. */
+/** True when a create call failed because the resource already exists (409). */
+function isAlreadyExists(err: unknown): boolean {
+  const code = (err as { code?: number }).code;
+  const msg = err instanceof Error ? err.message : String(err);
+  return code === 409 || /already exists/i.test(msg);
+}
+
+/**
+ * Create the service account (no key). Returns its email + OAuth client id, and
+ * whether it already existed (in reconcile mode a pre-existing SA is reused
+ * rather than re-created, and the caller skips minting a redundant key).
+ */
 async function createServiceAccount(
   auth: AuthClient,
   projectId: string,
   spec: ServiceAccountSpec,
+  reconcile: boolean,
   log: (m: string) => void,
-): Promise<{ email: string; clientId: string; resourceName: string }> {
+): Promise<{ email: string; clientId: string; resourceName: string; existed: boolean }> {
   const iam = google.iam({ version: 'v1', auth: auth as never });
   log(`Creating service account "${spec.id}"…`);
-  const sa = await iam.projects.serviceAccounts.create({
-    name: `projects/${projectId}`,
-    requestBody: {
-      accountId: spec.id,
-      serviceAccount: { displayName: spec.displayName },
-    },
-  });
-  // uniqueId is the OAuth client id a domain-wide-delegation grant is keyed on.
-  return { email: sa.data.email!, clientId: sa.data.uniqueId ?? '', resourceName: sa.data.name! };
+  try {
+    const sa = await iam.projects.serviceAccounts.create({
+      name: `projects/${projectId}`,
+      requestBody: {
+        accountId: spec.id,
+        serviceAccount: { displayName: spec.displayName },
+      },
+    });
+    // uniqueId is the OAuth client id a domain-wide-delegation grant is keyed on.
+    return { email: sa.data.email!, clientId: sa.data.uniqueId ?? '', resourceName: sa.data.name!, existed: false };
+  } catch (err) {
+    if (reconcile && isAlreadyExists(err)) {
+      const email = `${spec.id}@${projectId}.iam.gserviceaccount.com`;
+      const name = `projects/${projectId}/serviceAccounts/${email}`;
+      const { data } = await iam.projects.serviceAccounts.get({ name });
+      log(`✓ Service account "${spec.id}" already exists — reusing it`);
+      return { email: data.email ?? email, clientId: data.uniqueId ?? '', resourceName: data.name ?? name, existed: true };
+    }
+    throw err;
+  }
 }
 
 /** Mint a JSON key for an existing SA and write it to disk. Returns the file path. */
@@ -285,8 +321,9 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
 
   // Build labels up front so an invalid --ttl fails before anything is created.
   const labels = buildSeedLabels({ ttl: options.ttl });
+  const reconcile = options.reconcile === true;
 
-  const projectNumber = await createProject(auth, projectId, displayName, options.parent, labels, log);
+  const projectNumber = await createProject(auth, projectId, displayName, options.parent, labels, reconcile, log);
 
   const apisToEnable = dedupe([
     ...BOOTSTRAP_APIS,
@@ -318,11 +355,16 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
     result.serviceAccounts = [];
     result.dwdGrants = [];
     for (const spec of saSpecs) {
-      const sa = await createServiceAccount(auth, projectId, spec, log);
+      const sa = await createServiceAccount(auth, projectId, spec, reconcile, log);
       // The SA is created; a downloadable key can still be blocked by org policy.
       // Don't discard the SA over that — record a warning and carry on (like the
       // OAuth-client path). The SA + its client id are still returned.
+      // In reconcile mode a pre-existing SA keeps its current key(s) — minting a
+      // fresh one on every apply would pile up keys, so skip it.
       let keyFile: string | null = null;
+      if (sa.existed) {
+        log(`  keeping existing key(s) for ${sa.email} (reconcile)`);
+      } else {
       try {
         keyFile = await mintServiceAccountKey(auth, sa.resourceName, outputDir, spec.keyFile, log);
       } catch (err) {
@@ -337,6 +379,7 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
         } else {
           throw err;
         }
+      }
       }
       result.serviceAccounts.push({ email: sa.email, keyFile, clientId: sa.clientId });
       if (spec.dwdScopes?.length) {

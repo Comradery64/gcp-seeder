@@ -206,6 +206,37 @@ claude mcp add gcp-seeder -- npx -y gcp-seeder mcp
 
 **Safety model, baked in:** `audit` is read-only; the destructive tools (`sweep`, `destroy`, `rotate`) **default to dry-run** and only mutate when the agent passes `apply: true`, and `destroy` still refuses non-seeder-owned projects unless `force: true`. Every tool is annotated (`readOnlyHint` / `destructiveHint`) so clients can prompt before dangerous calls. Progress goes to stderr, keeping the stdio protocol channel clean.
 
+### Declarative manifest — `--manifest`
+
+Describe the project you want in a `gcp-seeder.yaml` and reconcile it — re-running is **idempotent** (an existing project and its service accounts are reused, not re-created, and no duplicate keys are minted):
+
+```yaml
+# gcp-seeder.yaml
+projectId: my-app
+parent: organizations/123456789
+displayName: My App
+preset: ai                 # optional; unions with `apis`
+apis:
+  - run.googleapis.com
+serviceAccount: true
+wif: github:my-org/my-repo # optional keyless CI auth
+ttl: 30d
+```
+
+```bash
+npx gcp-seeder --manifest gcp-seeder.yaml          # apply (safe to re-run)
+npx gcp-seeder --manifest gcp-seeder.yaml --json   # machine-readable result
+```
+
+### Export to Terraform — `export`
+
+Once a project exists, graduate it into your IaC: `export` reads it and prints Terraform HCL for the gcp-seeder-managed surface (project, enabled APIs, user service accounts, WIF pools/providers). **Read-only, emits no secrets.** This is a starting point for managing the project in Terraform — the tool deliberately stops at bootstrap + export rather than becoming an IaC engine.
+
+```bash
+npx gcp-seeder export --project my-app --terraform            # HCL to stdout
+npx gcp-seeder export --project my-app --terraform -o main.tf # ...or to a file
+```
+
 ## Library
 
 ```ts

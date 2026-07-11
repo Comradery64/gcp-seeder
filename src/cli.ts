@@ -11,6 +11,7 @@ import { sweepProjects } from './sweep.js';
 import { rotateServiceAccountKey } from './rotate.js';
 import { parseWifTarget } from './wif.js';
 import { exportProjectTerraform } from './export.js';
+import { loadManifest, manifestToSeedOptions } from './manifest.js';
 import { VERSION } from './version.js';
 import type { AuditReport, CredentialTargets, DestroyResult, SeedResult, ServiceAccountSpec, SweepResult } from './types.js';
 
@@ -41,6 +42,7 @@ program
   .option('--support-email <email>', 'Consent-screen support email (for --oauth-client)')
   .option('--output-dir <dir>', 'Where to write credentials', './credentials')
   .option('--ttl <duration>', 'Mark the project to expire after a duration (e.g. 30d, 2w, 12h); sweep deletes it once lapsed')
+  .option('--manifest <file>', 'Reconcile from a gcp-seeder.yaml manifest (idempotent; existing project/SAs are reused)')
   .option('--json', 'Emit the SeedResult as JSON (implies --yes; suppresses progress output)')
   .option('-y, --yes', 'Skip prompts; use flags/defaults non-interactively')
   .action(run);
@@ -310,6 +312,7 @@ interface CliOptions {
   supportEmail?: string;
   outputDir: string;
   ttl?: string;
+  manifest?: string;
   json?: boolean;
   yes?: boolean;
 }
@@ -322,6 +325,33 @@ async function run(opts: CliOptions): Promise<void> {
 
   // Preflight: make sure we actually have credentials before doing any work.
   await ensureBootstrap({ interactive, autoInstall: Boolean(opts.yes) || json, logger: json ? () => {} : log });
+
+  // Declarative path: reconcile from a manifest instead of flags/prompts.
+  if (opts.manifest) {
+    const seedOpts = manifestToSeedOptions(await loadManifest(opts.manifest));
+    if (!json) console.log(`\nApplying manifest ${opts.manifest} (reconcile)…`);
+    const result = await seedProject({
+      ...seedOpts,
+      outputDir: seedOpts.outputDir ?? opts.outputDir,
+      logger: json ? () => {} : log,
+    });
+    if (json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    console.log('\n✓ Applied.');
+    console.log(`  Project:  ${result.projectId} (${result.projectNumber})`);
+    console.log(`  APIs:     ${result.enabledApis.length} enabled`);
+    if (result.labels.expires) console.log(`  Expires:  ${result.labels.expires}`);
+    for (const sa of result.serviceAccounts ?? []) {
+      console.log(`  SA:       ${sa.email}${sa.keyFile ? `  (key ${sa.keyFile})` : ''}`);
+    }
+    for (const w of result.warnings) console.warn(`  ⚠ ${w}`);
+    printWifGuidance(result);
+    printDwdGuidance(result);
+    console.log(`\nConsole: https://console.cloud.google.com/home/dashboard?project=${result.projectId}`);
+    return;
+  }
 
   const promptedId =
     opts.projectId ??
