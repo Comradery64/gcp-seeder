@@ -241,6 +241,16 @@ program
   });
 
 program
+  .command('mcp')
+  .description('Run an MCP (stdio) server exposing seed/audit/sweep/destroy/rotate as tools for agents.')
+  .action(async () => {
+    // stdout is the MCP protocol channel here — never write to it. runMcpServer
+    // routes all progress to stderr and blocks until the client disconnects.
+    const { runMcpServer } = await import('./mcp.js');
+    await runMcpServer();
+  });
+
+program
   .command('init')
   .description('One-time setup: install gcloud if needed and sign in (writes ADC credentials).')
   .option('-y, --yes', 'Auto-install gcloud without asking')
