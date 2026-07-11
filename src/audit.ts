@@ -1,6 +1,7 @@
 import { google } from 'googleapis';
 import type { AuthClient } from 'google-auth-library';
 import { resolveAuth } from './auth.js';
+import { isSeederLabeled } from './labels.js';
 import { listWifPools } from './wif.js';
 import type {
   AuditOptions,
@@ -55,13 +56,16 @@ async function auditProject(
   flagPatterns: RegExp[],
 ): Promise<ProjectAudit> {
   const projectId = project.projectId!;
+  const labels = (project as { labels?: Record<string, string> }).labels;
   const audit: ProjectAudit = {
     projectId,
     projectNumber: project.projectNumber,
     name: project.name,
     lifecycleState: project.lifecycleState,
     createTime: project.createTime,
-    orphanCandidate: flagPatterns.some((rx) => rx.test(projectId)),
+    labels,
+    // Prefer the seeder's own label; fall back to the legacy orphan globs.
+    orphanCandidate: isSeederLabeled(labels) || flagPatterns.some((rx) => rx.test(projectId)),
     accessible: true,
     serviceAccounts: [],
     wifPools: [],

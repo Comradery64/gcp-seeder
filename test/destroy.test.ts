@@ -138,6 +138,25 @@ test('dry-run lists WIF pools but deletes nothing', async () => {
   assert.equal(res.dryRun, true);
 });
 
+test('acts on a label-owned project even when the id matches no glob (no --force)', async () => {
+  const keyDelete = mock.fn(async () => ({ data: {} }));
+  const projDelete = mock.fn(async () => ({ data: {} }));
+  mock.method(google, 'iam', () => fakeIam(keyDelete) as never);
+  // crm.projects.get reports the seeder ownership label; no glob would match this id.
+  mock.method(google, 'cloudresourcemanager', () => ({
+    projects: {
+      get: async () => ({ data: { labels: { 'seeded-by': 'gcp-seeder' } } }),
+      delete: projDelete,
+    },
+  }) as never);
+
+  const res = await destroyProjects({ projectIds: ['custom-name-xyz'], apply: true, auth: {} as never });
+
+  assert.equal(res.projects[0]!.skipped, undefined, 'label ownership passes the safety check');
+  assert.equal(res.projects[0]!.matchedPattern, true);
+  assert.equal(projDelete.mock.callCount(), 1);
+});
+
 test('a non-orphan project is skipped without --force', async () => {
   const keyDelete = mock.fn(async () => ({ data: {} }));
   const projDelete = mock.fn(async () => ({ data: {} }));

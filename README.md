@@ -152,6 +152,28 @@ npx gcp-seeder destroy --project gyb-project-xyz --keys-only # revoke standing c
 
 `--keys-only` revokes **all standing credentials** — static keys *and* WIF pools — while keeping the project and its service accounts, since WIF is a live credential path just like a key. Domain-wide-delegation grants can't be removed via any API, so `destroy` reports the client ids for you to delete in the Admin console.
 
+### Labels & TTL — everything the tool makes is findable and mortal
+
+Every project `seed` creates is stamped with labels: `seeded-by=gcp-seeder` and `seeded-at=<date>`. Pass `--ttl` to also stamp `expires=<date>`, so the project can be cleaned up automatically once it lapses:
+
+```bash
+npx gcp-seeder --yes --preset ai --ttl 7d      # a throwaway that expires in a week
+```
+
+`audit` and `destroy` both prefer the `seeded-by` label to decide what's yours (the `gyb-project-*` / `seed-*` globs remain as a fallback for projects created before labels existed), so a project with a custom id is still recognized and safe to target.
+
+### Sweep — `sweep`
+
+The command to run on a schedule even if you never seed again: find every seeder-owned project and delete the expired ones. **Dry-run by default**, and it delegates deletion to `destroy`, so all the same safety rails apply (soft-delete, ownership check).
+
+```bash
+npx gcp-seeder sweep                 # dry-run: list owned projects, mark expired ones
+npx gcp-seeder sweep --apply         # soft-delete the expired ones (asks to confirm)
+npx gcp-seeder sweep --max-age 30d   # also sweep owned projects older than 30 days
+```
+
+`--max-age` catches projects with no `expires` label (e.g. seeded before you adopted TTLs) once they exceed the age you give.
+
 ## Library
 
 ```ts
@@ -175,6 +197,7 @@ console.log(result.projectId, result.serviceAccount?.keyFile);
 2. **APIs enabled** — your selection plus the bootstrap APIs the tool itself needs (Resource Manager, Service Usage, IAM, IAP).
 3. **Service account + key** → `credentials/service-account.json` (if requested).
 4. **OAuth client + consent screen** → `credentials/client_secret.json` (if requested).
+5. **Ownership labels** on the project — `seeded-by=gcp-seeder`, `seeded-at=<date>`, and `expires=<date>` when `--ttl` is set — so `audit`/`sweep`/`destroy` can find it later.
 
 All credential files are written with `0600` permissions, and the included `.gitignore` keeps them out of version control. **Never commit these files.**
 
@@ -189,11 +212,12 @@ When it fails, `seedProject` does **not** throw; it records a warning and gives 
 
 ## Cleanup
 
-Use the built-in lifecycle commands — `audit` to find what's lying around, `destroy` to tear it down (revokes static keys + soft-deletes, with a dry-run first):
+Use the built-in lifecycle commands — `audit` to find what's lying around, `sweep` to auto-clean expired projects, `destroy` to tear down specific ones (all soft-delete, all dry-run first):
 
 ```bash
 npx gcp-seeder audit                                     # what exists?
-npx gcp-seeder destroy --project <project-id> --apply    # tear it down
+npx gcp-seeder sweep --apply                             # delete everything expired
+npx gcp-seeder destroy --project <project-id> --apply    # tear down one project
 ```
 
 For a one-off manual delete you can still use `gcloud projects delete <project-id>`, but `destroy` also revokes the static keys and reminds you to remove any domain-wide-delegation grants.

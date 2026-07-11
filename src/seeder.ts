@@ -5,6 +5,7 @@ import { google } from 'googleapis';
 import type { AuthClient } from 'google-auth-library';
 import { BOOTSTRAP_APIS } from './apis.js';
 import { resolveAuth } from './auth.js';
+import { buildSeedLabels } from './labels.js';
 import { setupGithubWif, WIF_APIS } from './wif.js';
 import type { SeedOptions, SeedResult, ServiceAccountSpec, WifResult } from './types.js';
 
@@ -72,12 +73,13 @@ async function createProject(
   projectId: string,
   displayName: string,
   parent: string | undefined,
+  labels: Record<string, string>,
   log: (m: string) => void,
 ): Promise<string> {
   const crm = google.cloudresourcemanager({ version: 'v3', auth: auth as never });
   log(`Creating project "${projectId}"…`);
   const create = await crm.projects.create({
-    requestBody: { projectId, displayName, parent },
+    requestBody: { projectId, displayName, parent, labels },
   });
   const done = await waitForOperation(
     async () => (await crm.operations.get({ name: create.data.name! })).data,
@@ -281,7 +283,10 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
     );
   }
 
-  const projectNumber = await createProject(auth, projectId, displayName, options.parent, log);
+  // Build labels up front so an invalid --ttl fails before anything is created.
+  const labels = buildSeedLabels({ ttl: options.ttl });
+
+  const projectNumber = await createProject(auth, projectId, displayName, options.parent, labels, log);
 
   const apisToEnable = dedupe([
     ...BOOTSTRAP_APIS,
@@ -294,6 +299,7 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
     projectId,
     projectNumber,
     enabledApis,
+    labels,
     warnings: [],
   };
 

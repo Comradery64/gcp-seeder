@@ -129,6 +129,12 @@ export interface SeedOptions {
    */
   wif?: WifTarget;
   /**
+   * Time-to-live for the project, e.g. "30d", "2w", "12h". When set, the project
+   * is stamped with an `expires` label so `sweep` can find and delete it once it
+   * lapses. Omit for a project with no expiry.
+   */
+  ttl?: string;
+  /**
    * Support email shown on the OAuth consent screen. Required when
    * `credentials.oauthClient` is true.
    */
@@ -185,7 +191,9 @@ export interface ProjectAudit {
   name?: string;
   lifecycleState?: string;
   createTime?: string;
-  /** Matched one of the flagPatterns. */
+  /** Labels on the project (e.g. seeded-by, seeded-at, expires), if any. */
+  labels?: Record<string, string>;
+  /** Owned by the seeder: carries the `seeded-by` label OR matched a flagPattern. */
   orphanCandidate: boolean;
   /** False if we couldn't list service accounts (no permission / not active). */
   accessible: boolean;
@@ -258,6 +266,50 @@ export interface DestroyResult {
   projects: ProjectDestroyResult[];
 }
 
+export interface SweepOptions {
+  /** Actually delete the matching projects. Default false (dry-run). */
+  apply?: boolean;
+  /**
+   * Also sweep seeder-owned projects older than this duration ("30d", "2w")
+   * even if they carry no `expires` label. Omit to sweep only expired projects.
+   */
+  maxAge?: string;
+  /**
+   * Glob patterns used as a fallback to claim ownership of projects created
+   * before labels existed. Default: ["gyb-project-*", "seed-*"].
+   */
+  flagPatterns?: string[];
+  /** Reference "now" for expiry/age math. Injectable for tests; defaults to the wall clock. */
+  now?: Date;
+  auth?: AuthClient;
+  logger?: (message: string) => void;
+}
+
+/** One seeder-owned project considered by `sweep`. */
+export interface SweepCandidate {
+  projectId: string;
+  /** How we claimed it: by `seeded-by` label, or by glob fallback. */
+  ownedBy: 'label' | 'glob';
+  seededAt?: string;
+  expires?: string;
+  ageDays?: number;
+  /** Past its `expires` label. */
+  expired: boolean;
+  /** Older than `maxAge` (only computed when `maxAge` is set). */
+  stale: boolean;
+  /** Will be (or was) swept. */
+  selected: boolean;
+}
+
+export interface SweepResult {
+  dryRun: boolean;
+  /** Seeder-owned projects considered (after ownership filtering). */
+  scanned: number;
+  candidates: SweepCandidate[];
+  /** Teardown outcome for the selected projects (undefined if none selected). */
+  destroy?: DestroyResult;
+}
+
 /**
  * A domain-wide-delegation authorization the caller must complete by hand.
  * There is no public API to create DWD grants, so the seeder returns the exact
@@ -275,6 +327,8 @@ export interface SeedResult {
   projectId: string;
   projectNumber: string;
   enabledApis: string[];
+  /** Labels stamped on the project (seeded-by, seeded-at, and expires when a ttl was set). */
+  labels: Record<string, string>;
   /**
    * The first service account created, if any. Retained for backwards
    * compatibility; prefer `serviceAccounts` for multi-SA setups.

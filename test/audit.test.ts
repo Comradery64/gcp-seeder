@@ -147,6 +147,23 @@ test('a WIF-less mock (no locations API) audits cleanly with no providers', asyn
   assert.deepEqual(r.projects[0]!.wifPools, []);
 });
 
+test('claims label-owned projects even when the id matches no glob', async () => {
+  const projects = [
+    { projectId: 'custom-name-xyz', lifecycleState: 'ACTIVE', labels: { 'seeded-by': 'gcp-seeder', 'seeded-at': '2026-07-01' } },
+    { projectId: 'other-app', lifecycleState: 'ACTIVE', labels: { team: 'core' } },
+  ];
+  mock.method(google, 'cloudresourcemanager', () => crmWith(projects) as never);
+  mock.method(google, 'iam', () => fakeIam() as never);
+
+  const r = await auditCloud({ auth: {} as never });
+
+  const ours = r.projects.find((p) => p.projectId === 'custom-name-xyz')!;
+  assert.equal(ours.orphanCandidate, true, 'label ownership overrides the glob miss');
+  assert.equal(ours.labels?.['seeded-by'], 'gcp-seeder');
+  // A project with unrelated labels is not claimed.
+  assert.equal(r.projects.find((p) => p.projectId === 'other-app')!.orphanCandidate, false);
+});
+
 test('custom flagPatterns override the defaults', async () => {
   const projects = [{ projectId: 'tmp-1', lifecycleState: 'ACTIVE' }, { projectId: 'keep-1', lifecycleState: 'ACTIVE' }];
   mock.method(google, 'cloudresourcemanager', () => crmWith(projects) as never);

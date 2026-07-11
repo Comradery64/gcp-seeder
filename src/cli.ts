@@ -6,8 +6,9 @@ import { auditCloud } from './audit.js';
 import { destroyProjects } from './destroy.js';
 import { findGcloud, hasAdc, installGcloud, runAdcLogin } from './gcloud.js';
 import { generateProjectId, seedProject } from './seeder.js';
+import { sweepProjects } from './sweep.js';
 import { parseWifTarget } from './wif.js';
-import type { AuditReport, CredentialTargets, DestroyResult, SeedResult, ServiceAccountSpec } from './types.js';
+import type { AuditReport, CredentialTargets, DestroyResult, SeedResult, ServiceAccountSpec, SweepResult } from './types.js';
 
 const ALL_PRESETS = [...Object.keys(PRESETS), ...Object.keys(PROVISIONING_PRESETS)];
 
@@ -35,6 +36,7 @@ program
   .option('--oauth-client', 'Create an OAuth client + consent screen')
   .option('--support-email <email>', 'Consent-screen support email (for --oauth-client)')
   .option('--output-dir <dir>', 'Where to write credentials', './credentials')
+  .option('--ttl <duration>', 'Mark the project to expire after a duration (e.g. 30d, 2w, 12h); sweep deletes it once lapsed')
   .option('-y, --yes', 'Skip prompts; use flags/defaults non-interactively')
   .action(run);
 
@@ -115,6 +117,48 @@ program
   });
 
 program
+  .command('sweep')
+  .description('Find seeder-owned projects and delete the expired/stale ones. Dry-run by default.')
+  .option('--max-age <duration>', 'Also sweep projects older than this even without an expiry (e.g. 30d, 2w)')
+  .option('--flag <pattern...>', 'Glob fallbacks to claim pre-label projects (default: gyb-project-*, seed-*)')
+  .option('--apply', 'Actually delete (default is a dry-run)')
+  .option('-y, --yes', 'Skip the interactive confirmation (for scripts)')
+  .action(async (opts: { maxAge?: string; flag?: string[]; apply?: boolean; yes?: boolean }) => {
+    // Always show the plan first (dry-run pass), so the user sees what's targeted.
+    const plan = await sweepProjects({
+      maxAge: opts.maxAge,
+      flagPatterns: opts.flag,
+      apply: false,
+      logger: log,
+    });
+    printSweepResult(plan);
+
+    const selected = plan.candidates.filter((c) => c.selected);
+    if (!opts.apply) {
+      if (selected.length) console.log('\nDry-run only. Re-run with --apply to delete the selected project(s).');
+      return;
+    }
+    if (selected.length === 0) {
+      console.log('\nNothing to sweep.');
+      return;
+    }
+    if (!opts.yes) {
+      const ok = await confirm({
+        message: `This will soft-delete ${selected.length} seeder-owned project(s). Proceed?`,
+        default: false,
+      });
+      if (!ok) {
+        console.log('Aborted.');
+        return;
+      }
+    }
+
+    const result = await sweepProjects({ maxAge: opts.maxAge, flagPatterns: opts.flag, apply: true, logger: log });
+    console.log('\n✓ Done.');
+    if (result.destroy) printDestroyResult(result.destroy);
+  });
+
+program
   .command('init')
   .description('One-time setup: install gcloud if needed and sign in (writes ADC credentials).')
   .option('-y, --yes', 'Auto-install gcloud without asking')
@@ -150,6 +194,7 @@ interface CliOptions {
   oauthClient?: boolean;
   supportEmail?: string;
   outputDir: string;
+  ttl?: string;
   yes?: boolean;
 }
 
@@ -214,6 +259,7 @@ async function run(opts: CliOptions): Promise<void> {
   console.log(`  service acct  ${saSummary}`);
   console.log(`  keyless (wif) ${wif ? `yes (github:${wif.repo})` : 'no'}`);
   console.log(`  oauth client  ${credentials.oauthClient ? 'yes' : 'no'}`);
+  console.log(`  ttl           ${opts.ttl ?? 'none (no expiry)'}`);
   console.log(`  output dir    ${opts.outputDir}\n`);
 
   if (interactive && !(await confirm({ message: 'Proceed?', default: true }))) {
@@ -229,6 +275,7 @@ async function run(opts: CliOptions): Promise<void> {
     credentials,
     serviceAccounts,
     wif,
+    ttl: opts.ttl,
     supportEmail,
     outputDir: opts.outputDir,
   });
@@ -236,6 +283,7 @@ async function run(opts: CliOptions): Promise<void> {
   console.log('\n✓ Done!');
   console.log(`  Project:  ${result.projectId} (${result.projectNumber})`);
   console.log(`  APIs:     ${result.enabledApis.length} enabled`);
+  if (result.labels.expires) console.log(`  Expires:  ${result.labels.expires}  (sweep will remove it after this date)`);
   if (result.serviceAccounts?.length) {
     for (const sa of result.serviceAccounts) {
       if (sa.keyFile) console.log(`  SA key:   ${sa.keyFile}  (${sa.email})`);
@@ -410,6 +458,26 @@ function printAuditReport(r: AuditReport): void {
     for (const w of r.warnings) console.log(`  - ${w}`);
   }
   console.log('\nThis was read-only. (Teardown will live in `gcp-seeder destroy`.)');
+}
+
+function printSweepResult(r: SweepResult): void {
+  console.log(`\nSeeder-owned projects: ${r.scanned}`);
+  if (r.scanned === 0) {
+    console.log('  (none found — nothing labeled seeded-by=gcp-seeder or matching the fallback globs)');
+    return;
+  }
+  for (const c of r.candidates) {
+    const marks = [c.expired ? 'EXPIRED' : '', c.stale ? 'STALE' : ''].filter(Boolean).join(' ');
+    const detail = [
+      c.expires ? `expires ${c.expires}` : 'no expiry',
+      c.ageDays !== undefined ? `age ${c.ageDays}d` : '',
+      `owned by ${c.ownedBy}`,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    const flag = c.selected ? `→ SWEEP${marks ? ` (${marks})` : ''}` : 'keep';
+    console.log(`  • ${c.projectId}  [${detail}]  ${flag}`);
+  }
 }
 
 function printDestroyResult(r: DestroyResult): void {

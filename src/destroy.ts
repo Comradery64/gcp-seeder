@@ -1,6 +1,7 @@
 import { google } from 'googleapis';
 import type { AuthClient } from 'google-auth-library';
 import { resolveAuth } from './auth.js';
+import { isSeederLabeled } from './labels.js';
 import { deleteWifPool, listWifPools } from './wif.js';
 import type { DestroyOptions, DestroyResult, ProjectDestroyResult } from './types.js';
 
@@ -39,7 +40,17 @@ export async function destroyProjects(options: DestroyOptions): Promise<DestroyR
   const results: ProjectDestroyResult[] = [];
 
   for (const projectId of options.projectIds) {
-    const matchedPattern = patterns.some((rx) => rx.test(projectId));
+    // Ownership check prefers the seeder's own label and falls back to the
+    // legacy orphan globs, so label-stamped projects with custom ids (that don't
+    // match a glob) are still recognized as safe to target.
+    let labels: Record<string, string> | undefined;
+    try {
+      const { data } = await crm.projects.get({ projectId });
+      labels = (data.labels ?? undefined) as Record<string, string> | undefined;
+    } catch {
+      // No get access / project missing — fall back to glob matching only.
+    }
+    const matchedPattern = patterns.some((rx) => rx.test(projectId)) || isSeederLabeled(labels);
     const r: ProjectDestroyResult = {
       projectId,
       matchedPattern,
@@ -51,7 +62,8 @@ export async function destroyProjects(options: DestroyOptions): Promise<DestroyR
     };
 
     if (!matchedPattern && !force) {
-      r.skipped = 'does not match an orphan pattern; re-run with --force to target it anyway';
+      r.skipped =
+        'not seeder-owned (no seeded-by label) and does not match an orphan pattern; re-run with --force to target it anyway';
       results.push(r);
       log(`SKIP ${projectId} — ${r.skipped}`);
       continue;
