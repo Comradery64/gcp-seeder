@@ -182,6 +182,22 @@ test('claims label-owned projects even when the id matches no glob', async () =>
   assert.equal(r.projects.find((p) => p.projectId === 'other-app')!.orphanCandidate, false);
 });
 
+test('--project mode fetches each project so labels populate (label ownership works)', async () => {
+  const get = mock.fn(async ({ projectId }: { projectId: string }) => ({
+    data: { projectId, lifecycleState: 'ACTIVE', labels: { 'seeded-by': 'gcp-seeder', 'seeded-at': '2026-07-01' } },
+  }));
+  const listSpy = mock.fn(async () => ({ data: { projects: [] } }));
+  mock.method(google, 'cloudresourcemanager', () => ({ projects: { list: listSpy, get } }) as never);
+  mock.method(google, 'iam', () => fakeIam() as never);
+
+  const r = await auditCloud({ projectIds: ['custom-id-1'], auth: {} as never });
+
+  assert.equal(listSpy.mock.callCount(), 0, 'must not list all projects when ids are given');
+  assert.equal(get.mock.callCount(), 1, 'fetches the named project to populate labels');
+  assert.equal(r.projects[0]!.labels?.['seeded-by'], 'gcp-seeder');
+  assert.equal(r.projects[0]!.orphanCandidate, true, 'ownership recognized via label in --project mode');
+});
+
 test('custom flagPatterns override the defaults', async () => {
   const projects = [{ projectId: 'tmp-1', lifecycleState: 'ACTIVE' }, { projectId: 'keep-1', lifecycleState: 'ACTIVE' }];
   mock.method(google, 'cloudresourcemanager', () => crmWith(projects) as never);

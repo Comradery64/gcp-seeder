@@ -145,7 +145,18 @@ export async function auditCloud(options: AuditOptions = {}): Promise<AuditRepor
 
   let projects: Array<Record<string, string>>;
   if (options.projectIds?.length) {
-    projects = options.projectIds.map((projectId) => ({ projectId }));
+    // Fetch each named project so labels / lifecycle / number are populated —
+    // otherwise label-based ownership and the `labels` field would be blank in
+    // --project mode. Fall back to a bare id if the project can't be fetched.
+    const crm = google.cloudresourcemanager({ version: 'v1', auth: auth as never });
+    projects = await mapLimit(options.projectIds, options.concurrency ?? 8, async (projectId) => {
+      try {
+        const { data } = await crm.projects.get({ projectId });
+        return data as Record<string, string>;
+      } catch {
+        return { projectId };
+      }
+    });
   } else {
     log('Listing projects…');
     projects = await listProjects(auth);
