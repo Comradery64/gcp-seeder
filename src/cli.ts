@@ -38,6 +38,7 @@ program
   .option('--support-email <email>', 'Consent-screen support email (for --oauth-client)')
   .option('--output-dir <dir>', 'Where to write credentials', './credentials')
   .option('--ttl <duration>', 'Mark the project to expire after a duration (e.g. 30d, 2w, 12h); sweep deletes it once lapsed')
+  .option('--json', 'Emit the SeedResult as JSON (implies --yes; suppresses progress output)')
   .option('-y, --yes', 'Skip prompts; use flags/defaults non-interactively')
   .action(run);
 
@@ -71,29 +72,34 @@ program
   .option('--keys-only', 'Revoke standing credentials (static SA keys + WIF pools); keep the project + service accounts')
   .option('--apply', 'Actually delete (default is a dry-run)')
   .option('--force', "Allow projects that don't match an orphan pattern (gyb-project-*/seed-*)")
+  .option('--json', 'Emit the DestroyResult as JSON (implies --yes; suppresses progress output)')
   .option('-y, --yes', 'Skip the interactive confirmation (for scripts)')
-  .action(async (opts: { project: string[]; keysOnly?: boolean; apply?: boolean; force?: boolean; yes?: boolean }) => {
+  .action(async (opts: { project: string[]; keysOnly?: boolean; apply?: boolean; force?: boolean; json?: boolean; yes?: boolean }) => {
+    const json = Boolean(opts.json);
     // Show the plan first (always a dry-run pass), so the user sees exactly what's targeted.
     const plan = await destroyProjects({
       projectIds: opts.project,
       keysOnly: opts.keysOnly,
       force: opts.force,
       apply: false,
-      logger: log,
+      logger: json ? undefined : log,
     });
-    printDestroyResult(plan);
+    if (!json) printDestroyResult(plan);
 
     if (!opts.apply) {
-      console.log('\nDry-run only. Re-run with --apply to execute.');
+      if (json) console.log(JSON.stringify(plan, null, 2));
+      else console.log('\nDry-run only. Re-run with --apply to execute.');
       return;
     }
 
     const actionable = plan.projects.filter((p) => !p.skipped);
     if (actionable.length === 0) {
-      console.log('\nNothing to do.');
+      if (json) console.log(JSON.stringify(plan, null, 2));
+      else console.log('\nNothing to do.');
       return;
     }
-    if (!opts.yes) {
+    // --json is machine mode: skip the interactive confirmation (like --yes).
+    if (!opts.yes && !json) {
       const keyCount = plan.projects.reduce((n, p) => n + p.keysDeleted.length, 0);
       const poolCount = plan.projects.reduce((n, p) => n + p.wifPoolsDeleted.length, 0);
       const ok = await confirm({
@@ -113,10 +119,14 @@ program
       keysOnly: opts.keysOnly,
       force: opts.force,
       apply: true,
-      logger: log,
+      logger: json ? undefined : log,
     });
-    console.log('\n✓ Done.');
-    printDestroyResult(result);
+    if (json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log('\n✓ Done.');
+      printDestroyResult(result);
+    }
   });
 
 program
@@ -125,27 +135,32 @@ program
   .option('--max-age <duration>', 'Also sweep projects older than this even without an expiry (e.g. 30d, 2w)')
   .option('--flag <pattern...>', 'Glob fallbacks to claim pre-label projects (default: gyb-project-*, seed-*)')
   .option('--apply', 'Actually delete (default is a dry-run)')
+  .option('--json', 'Emit the SweepResult as JSON (implies --yes; suppresses progress output)')
   .option('-y, --yes', 'Skip the interactive confirmation (for scripts)')
-  .action(async (opts: { maxAge?: string; flag?: string[]; apply?: boolean; yes?: boolean }) => {
+  .action(async (opts: { maxAge?: string; flag?: string[]; apply?: boolean; json?: boolean; yes?: boolean }) => {
+    const json = Boolean(opts.json);
     // Always show the plan first (dry-run pass), so the user sees what's targeted.
     const plan = await sweepProjects({
       maxAge: opts.maxAge,
       flagPatterns: opts.flag,
       apply: false,
-      logger: log,
+      logger: json ? undefined : log,
     });
-    printSweepResult(plan);
+    if (!json) printSweepResult(plan);
 
     const selected = plan.candidates.filter((c) => c.selected);
     if (!opts.apply) {
-      if (selected.length) console.log('\nDry-run only. Re-run with --apply to delete the selected project(s).');
+      if (json) console.log(JSON.stringify(plan, null, 2));
+      else if (selected.length) console.log('\nDry-run only. Re-run with --apply to delete the selected project(s).');
       return;
     }
     if (selected.length === 0) {
-      console.log('\nNothing to sweep.');
+      if (json) console.log(JSON.stringify(plan, null, 2));
+      else console.log('\nNothing to sweep.');
       return;
     }
-    if (!opts.yes) {
+    // --json is machine mode: skip the interactive confirmation (like --yes).
+    if (!opts.yes && !json) {
       const ok = await confirm({
         message: `This will soft-delete ${selected.length} seeder-owned project(s). Proceed?`,
         default: false,
@@ -156,9 +171,13 @@ program
       }
     }
 
-    const result = await sweepProjects({ maxAge: opts.maxAge, flagPatterns: opts.flag, apply: true, logger: log });
-    console.log('\n✓ Done.');
-    if (result.destroy) printDestroyResult(result.destroy);
+    const result = await sweepProjects({ maxAge: opts.maxAge, flagPatterns: opts.flag, apply: true, logger: json ? undefined : log });
+    if (json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log('\n✓ Done.');
+      if (result.destroy) printDestroyResult(result.destroy);
+    }
   });
 
 program
@@ -169,8 +188,10 @@ program
   .option('--key-id <id>', 'Rotate only this key id (default: retire all user-managed keys after minting one)')
   .option('--output-dir <dir>', 'Where to write the new key', './credentials')
   .option('--apply', 'Actually mint + retire keys (default is a dry-run)')
+  .option('--json', 'Emit the RotateResult as JSON (implies --yes; suppresses progress output)')
   .option('-y, --yes', 'Skip the interactive confirmation (for scripts)')
-  .action(async (opts: { project: string; serviceAccount: string; keyId?: string; outputDir: string; apply?: boolean; yes?: boolean }) => {
+  .action(async (opts: { project: string; serviceAccount: string; keyId?: string; outputDir: string; apply?: boolean; json?: boolean; yes?: boolean }) => {
+    const json = Boolean(opts.json);
     // Dry-run pass first so the user sees exactly which keys will be retired.
     const plan = await rotateServiceAccountKey({
       projectId: opts.project,
@@ -178,17 +199,19 @@ program
       keyId: opts.keyId,
       outputDir: opts.outputDir,
       apply: false,
-      logger: log,
+      logger: json ? undefined : log,
     });
 
     if (!opts.apply) {
-      console.log('\nDry-run only. Re-run with --apply to rotate.');
+      if (json) console.log(JSON.stringify(plan, null, 2));
+      else console.log('\nDry-run only. Re-run with --apply to rotate.');
       return;
     }
-    if (plan.retiredKeyIds.length === 0 && !opts.keyId) {
+    if (!json && plan.retiredKeyIds.length === 0 && !opts.keyId) {
       console.log('\nNo existing user-managed keys — will mint a new key only.');
     }
-    if (!opts.yes) {
+    // --json is machine mode: skip the interactive confirmation (like --yes).
+    if (!opts.yes && !json) {
       const ok = await confirm({
         message: `This will mint a new key for ${opts.serviceAccount} and PERMANENTLY delete ${plan.retiredKeyIds.length} old key(s). Proceed?`,
         default: false,
@@ -205,12 +228,16 @@ program
       keyId: opts.keyId,
       outputDir: opts.outputDir,
       apply: true,
-      logger: log,
+      logger: json ? undefined : log,
     });
-    console.log('\n✓ Done.');
-    if (result.newKeyFile) console.log(`  New key:  ${result.newKeyFile}`);
-    if (result.retiredKeyIds.length) console.log(`  Retired:  ${result.retiredKeyIds.join(', ')}`);
-    for (const w of result.warnings) console.warn(`  ⚠ ${w}`);
+    if (json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log('\n✓ Done.');
+      if (result.newKeyFile) console.log(`  New key:  ${result.newKeyFile}`);
+      if (result.retiredKeyIds.length) console.log(`  Retired:  ${result.retiredKeyIds.join(', ')}`);
+      for (const w of result.warnings) console.warn(`  ⚠ ${w}`);
+    }
   });
 
 program
@@ -250,14 +277,18 @@ interface CliOptions {
   supportEmail?: string;
   outputDir: string;
   ttl?: string;
+  json?: boolean;
   yes?: boolean;
 }
 
 async function run(opts: CliOptions): Promise<void> {
-  const interactive = !opts.yes;
+  // --json is a machine mode: it forces non-interactive and suppresses all
+  // human output so stdout is a single clean JSON document.
+  const json = Boolean(opts.json);
+  const interactive = !opts.yes && !json;
 
   // Preflight: make sure we actually have credentials before doing any work.
-  await ensureBootstrap({ interactive, autoInstall: Boolean(opts.yes) });
+  await ensureBootstrap({ interactive, autoInstall: Boolean(opts.yes) || json, logger: json ? () => {} : log });
 
   const promptedId =
     opts.projectId ??
@@ -308,14 +339,16 @@ async function run(opts: CliOptions): Promise<void> {
       ? 'yes (1)'
       : 'no';
 
-  console.log('\nReady to seed:');
-  console.log(`  project       ${projectId}`);
-  console.log(`  apis          ${apis.length ? apis.join(', ') : '(none)'}`);
-  console.log(`  service acct  ${saSummary}`);
-  console.log(`  keyless (wif) ${wif ? `yes (github:${wif.repo})` : 'no'}`);
-  console.log(`  oauth client  ${credentials.oauthClient ? 'yes' : 'no'}`);
-  console.log(`  ttl           ${opts.ttl ?? 'none (no expiry)'}`);
-  console.log(`  output dir    ${opts.outputDir}\n`);
+  if (!json) {
+    console.log('\nReady to seed:');
+    console.log(`  project       ${projectId}`);
+    console.log(`  apis          ${apis.length ? apis.join(', ') : '(none)'}`);
+    console.log(`  service acct  ${saSummary}`);
+    console.log(`  keyless (wif) ${wif ? `yes (github:${wif.repo})` : 'no'}`);
+    console.log(`  oauth client  ${credentials.oauthClient ? 'yes' : 'no'}`);
+    console.log(`  ttl           ${opts.ttl ?? 'none (no expiry)'}`);
+    console.log(`  output dir    ${opts.outputDir}\n`);
+  }
 
   if (interactive && !(await confirm({ message: 'Proceed?', default: true }))) {
     console.log('Aborted.');
@@ -333,7 +366,13 @@ async function run(opts: CliOptions): Promise<void> {
     ttl: opts.ttl,
     supportEmail,
     outputDir: opts.outputDir,
+    logger: json ? () => {} : undefined,
   });
+
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
 
   console.log('\n✓ Done!');
   console.log(`  Project:  ${result.projectId} (${result.projectNumber})`);
@@ -578,15 +617,18 @@ function printDestroyResult(r: DestroyResult): void {
 async function ensureBootstrap({
   interactive,
   autoInstall,
+  logger = log,
 }: {
   interactive: boolean;
   autoInstall: boolean;
+  /** Progress sink — pass a silent one in --json mode so stdout stays clean JSON. */
+  logger?: (m: string) => void;
 }): Promise<void> {
   if (hasAdc()) {
-    log('✓ Google Cloud credentials found.');
+    logger('✓ Google Cloud credentials found.');
     return;
   }
-  log("No Google Cloud credentials yet — let's set that up (one-time).\n");
+  logger("No Google Cloud credentials yet — let's set that up (one-time).\n");
 
   let gcloud = await findGcloud();
   if (!gcloud) {
@@ -606,8 +648,8 @@ async function ensureBootstrap({
           'Run `gcp-seeder init` once (it installs gcloud and signs you in), then retry.',
       );
     }
-    gcloud = await installGcloud(log);
+    gcloud = await installGcloud(logger);
   }
 
-  await runAdcLogin(gcloud, log);
+  await runAdcLogin(gcloud, logger);
 }

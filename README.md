@@ -32,6 +32,8 @@ That's the whole setup. `init` checks for the gcloud SDK, **installs it for you*
 
 `gcp-seeder` covers the whole project lifecycle: **create → audit → tear down.**
 
+> **Scripting.** Every command takes `--json`, which emits its structured result on stdout and suppresses all progress output — so you can pipe `seed`/`audit`/`sweep`/`destroy`/`rotate` straight into `jq`. On the mutating commands `--json` implies `--yes` (no interactive confirmation) and still honors `--apply` / dry-run.
+
 ### Setup — `init`
 
 One-time. Installs the gcloud SDK if missing and signs you in (writes ADC credentials) — see [Setup](#setup-one-time) above. Run it once before the others; they also run this check inline, so you can't get stuck.
@@ -71,7 +73,10 @@ npx gcp-seeder --yes \
 | `--dwd-scopes <csv>` | OAuth scopes to surface for domain-wide delegation on the created SAs |
 | `--oauth-client` | Create an OAuth client + consent screen |
 | `--support-email <email>` | Required with `--oauth-client` |
+| `--wif <target>` | Keyless GitHub Actions auth via WIF (e.g. `github:owner/repo`) |
 | `--output-dir <dir>` | Credential output dir (default `./credentials`) |
+| `--ttl <duration>` | Stamp an `expires` label so `sweep` cleans it up (e.g. `30d`) |
+| `--json` | Emit the `SeedResult` as JSON (implies `--yes`; suppresses progress) |
 | `-y, --yes` | Skip all prompts |
 
 ### Service accounts + domain-wide delegation
