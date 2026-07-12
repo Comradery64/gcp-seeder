@@ -2,9 +2,21 @@ import test, { mock, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { google } from 'googleapis';
+import { GoogleAuth } from 'google-auth-library';
 import { MCP_TOOLS, buildMcpServer } from '../src/mcp.js';
 
 afterEach(() => mock.restoreAll());
+
+/**
+ * MCP tool handlers use ADC (they take no `auth` arg), so exercising a handler
+ * would otherwise hit real credential resolution — which hangs/fails in CI
+ * where there is no ADC. Stub GoogleAuth to hand back a no-network fake client
+ * so the mocked google.* APIs are what actually get exercised.
+ */
+function stubAdc() {
+  const fake = { getAccessToken: async () => ({ token: 'fake' }), quotaProjectId: undefined };
+  mock.method(GoogleAuth.prototype, 'getClient', async () => fake as never);
+}
 
 const tool = (name: string) => {
   const t = MCP_TOOLS.find((x) => x.name === name);
@@ -44,6 +56,7 @@ test('destroy requires at least one explicit project id', () => {
 });
 
 test('destroy tool dry-runs by default: mutates nothing', async () => {
+  stubAdc();
   const del = mock.fn(async () => ({ data: {} }));
   mock.method(google, 'cloudresourcemanager', () => ({
     projects: { get: async () => ({ data: { labels: { 'seeded-by': 'gcp-seeder' } } }), delete: del },
@@ -58,6 +71,7 @@ test('destroy tool dry-runs by default: mutates nothing', async () => {
 });
 
 test('rotate tool dry-runs by default: mints/deletes nothing', async () => {
+  stubAdc();
   const create = mock.fn();
   const del = mock.fn();
   mock.method(google, 'iam', () => ({
