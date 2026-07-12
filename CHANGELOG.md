@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/Comradery64/gcp-seeder/compare/v0.4.0...v0.4.1) (2026-07-12)
+
+
+### Bug Fixes
+
+* make MCP handler tests hermetic (no ambient ADC required) ([3175587](https://github.com/Comradery64/gcp-seeder/commit/3175587c29acd3dbe847c84959e4ebe36de25d76))
+
 ## [0.4.0](https://github.com/Comradery64/gcp-seeder/compare/v0.3.1...v0.4.0) (2026-07-12)
 
 
