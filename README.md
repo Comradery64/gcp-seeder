@@ -196,6 +196,8 @@ npx gcp-seeder rotate --project my-proj --service-account ci@... --key-id KEYID 
 
 By default every existing user-managed key is retired once the new one is minted; pass `--key-id` for a single key. If the org blocks key creation (`iam.disableServiceAccountKeyCreation`), nothing is rotated and it points you at keyless auth (`--wif`) instead.
 
+The mint→disable→delete happy-path is covered by unit tests; the org-policy-blocked path is verified live.
+
 ### Use with Claude Code / agents — `mcp`
 
 `gcp-seeder mcp` runs a stdio [MCP](https://modelcontextprotocol.io) server that exposes the lifecycle as agent tools: `gcp_seeder_audit`, `gcp_seeder_seed`, `gcp_seeder_sweep`, `gcp_seeder_destroy`, `gcp_seeder_rotate`. Register it with any MCP client, e.g. Claude Code:
