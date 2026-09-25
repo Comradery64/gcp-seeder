@@ -7,6 +7,7 @@ import { rotateServiceAccountKey } from './rotate.js';
 import { seedProject } from './seeder.js';
 import { sweepProjects } from './sweep.js';
 import { parseWifTarget } from './wif.js';
+import { explainGoogleError } from './errors.js';
 import { VERSION } from './version.js';
 
 /**
@@ -161,8 +162,14 @@ export function buildMcpServer(): McpServer {
       tool.name,
       { description: tool.description, inputSchema: tool.inputSchema, annotations: tool.annotations },
       async (args: Record<string, unknown>) => {
-        const result = await tool.handler(args);
-        return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+        try {
+          const result = await tool.handler(args);
+          return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+        } catch (err) {
+          // Give the agent a classified error (kind + fix) instead of a raw stack.
+          const explained = explainGoogleError(err, { projectId: args.projectId as string | undefined });
+          return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: explained }, null, 2) }] };
+        }
       },
     );
   }

@@ -11,6 +11,7 @@ import { sweepProjects } from './sweep.js';
 import { rotateServiceAccountKey } from './rotate.js';
 import { parseWifTarget } from './wif.js';
 import { exportProjectTerraform } from './export.js';
+import { explainGoogleError, formatExplainedError } from './errors.js';
 import { loadManifest, manifestToSeedOptions } from './manifest.js';
 import { VERSION } from './version.js';
 import type { AuditReport, CredentialTargets, DestroyResult, SeedResult, ServiceAccountSpec, SweepResult } from './types.js';
@@ -287,14 +288,16 @@ program
 program.parseAsync().catch((err) => {
   // Inquirer throws this when the user hits Ctrl-C — exit quietly.
   if (err?.name === 'ExitPromptError') process.exit(130);
-  const msg = err instanceof Error ? err.message : String(err);
-  // ADC sessions expire / can require reauth; surface a human instruction, not raw JSON.
-  if (/invalid_rapt|reauth|invalid_grant/i.test(msg)) {
-    console.error('\n✗ Your Google credentials need re-authentication (the session expired or reauth is required).');
-    console.error('  Run:  gcloud auth application-default login    (or:  gcp-seeder init)');
-    process.exit(1);
+  // Map Google's raw errors (quota, org policy, billing, quota-project, liens…)
+  // to a headline + fix. Unknown errors fall through with their original text.
+  const explained = explainGoogleError(err);
+  if (process.argv.includes('--json')) {
+    console.error(JSON.stringify({ error: explained }, null, 2));
+  } else if (explained.kind === 'unknown') {
+    console.error(`\n✗ ${explained.original}`);
+  } else {
+    console.error(`\n✗ ${formatExplainedError(explained)}`);
   }
-  console.error(`\n✗ ${msg}`);
   process.exit(1);
 });
 
