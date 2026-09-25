@@ -2,6 +2,7 @@ import { google } from 'googleapis';
 import type { AuthClient } from 'google-auth-library';
 import { resolveAuth } from './auth.js';
 import { GITHUB_OIDC_ISSUER, listWifPools } from './wif.js';
+import { getLinkedBillingAccount } from './billing.js';
 import type { ExportOptions, ExportResult } from './types.js';
 
 /** Turn an id into a Terraform-safe local resource name ([a-z0-9_], leading letter). */
@@ -78,10 +79,16 @@ export async function exportProjectTerraform(options: ExportOptions): Promise<Ex
   log(`Reading ${projectId}…`);
   const crm = google.cloudresourcemanager({ version: 'v3', auth: auth as never });
   const { data: project } = await crm.projects.get({ name: `projects/${projectId}` });
-  const [services, serviceAccounts, wifPools] = await Promise.all([
+  const [services, serviceAccounts, wifPools, billingAccount] = await Promise.all([
     listEnabledServices(auth, projectId),
     listUserServiceAccounts(auth, projectId),
     listWifPools(auth, projectId).catch(() => []),
+    getLinkedBillingAccount(auth, projectId).catch((err) => {
+      // A 403 here means the caller can't see billing info — treat as unlinked
+      // rather than failing the whole export.
+      if ((err as { code?: number }).code === 403) return undefined;
+      throw err;
+    }),
   ]);
 
   const pName = tfName(projectId);
@@ -116,6 +123,10 @@ export async function exportProjectTerraform(options: ExportOptions): Promise<Ex
     projLines.push('  labels = {');
     for (const [k, v] of Object.entries(labels).sort()) projLines.push(`    ${q(k)} = ${q(v)}`);
     projLines.push('  }');
+  }
+  if (billingAccount) {
+    const id = billingAccount.startsWith('billingAccounts/') ? billingAccount.slice('billingAccounts/'.length) : billingAccount;
+    projLines.push(`  billing_account = ${q(id)}`);
   }
   projLines.push('}');
   blocks.push(projLines.join('\n'));
