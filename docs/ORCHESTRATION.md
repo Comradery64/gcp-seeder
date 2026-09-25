@@ -7,8 +7,8 @@ of re-deriving them.
 
 ## Harness choice
 
-Inline `Agent` calls with `isolation: "worktree"` (not a `Workflow`), in two
-batches of five. Reason: every worker must run `npm ci` + the test suite in a
+Inline `Agent` calls with `isolation: "worktree"` (not a `Workflow`), all ten
+launched at once. Reason: every worker must run `npm ci` + the test suite in a
 clean checkout and hand back a **patch file**, and worktree isolation is the
 simplest way to guarantee ten concurrent workers never touch the same working
 tree. Context firewall: workers write to
@@ -86,8 +86,28 @@ Stop and report (do not improvise) if: the spec does not match the code you find
 a command fails after one retry; the task needs a file outside your allowed set;
 `npm test` on the base branch is not green before you start.
 
-## Cost record (fill in after the run)
+## Cost record (2026-09-25 run)
 
 | Slice | Tier/effort run | Escalated? | Notes |
 | --- | --- | --- | --- |
-| | | | |
+| A billing | Sonnet/medium ×2 | no (re-dispatched) | first run stopped on the worktree-base mismatch (see below); retry landed clean, 96→115 tests |
+| B roles | Opus/medium | no | self-corrected the worktree base; broke-the-guard on the member string |
+| C readiness | Sonnet/medium | no | substituted one probe (firestore has no pageSize) |
+| D preflight | Sonnet/medium | no | largest slice; shipped a billing stub that integration excluded |
+| E budget | Sonnet/medium ×2 | no (re-dispatched) | first run refused a reset in what had become the shared checkout — correct behaviour |
+| F harden | Opus/medium | no | sandbox blocked writing to the main scratch dir; artifacts copied from its worktree |
+| G errors | Sonnet/low | no | 19 tests; resolved the api-not-ready vs quota-project ambiguity itself |
+| H destroy | Sonnet/medium | no | extended types locally; integration folded them into types.ts |
+| I recipes | Sonnet/low | no | actionlint clean; ENTRYPOINT/CMD split for dry-run override |
+| J wif | Opus/medium | no | condition + principal asserted exactly; undelete path tested |
+| Wave 2 integration | Fable/low | no | 9 seed-path tests needed a `services.get` mock; 1 assertion relaxed (probe re-reads the project) |
+| Wave 3 | Sonnet ×3 | — | README assembly, adversarial verify, documented-path run |
+
+**Environment lesson:** `Agent` worktree isolation created most worktrees from
+`main` (7ed1fbe), not the current branch HEAD. Seven workers noticed and
+`git reset --hard` to the stated base on their own; two stopped and were
+re-dispatched with an explicit "reset if HEAD differs" instruction. When a
+stopped worker is *resumed*, its (unchanged) worktree has already been cleaned
+up and it lands in the shared checkout — never resume a stopped worktree
+agent; spawn a fresh one. Every handoff packet now states the base SHA and the
+reset instruction up front.
