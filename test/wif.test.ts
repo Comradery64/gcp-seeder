@@ -5,7 +5,15 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { google } from 'googleapis';
 import { seedProject } from '../src/seeder.js';
-import { parseWifTarget, githubActionsAuthSnippet, GITHUB_OIDC_ISSUER } from '../src/wif.js';
+import {
+  parseWifTarget,
+  githubActionsAuthSnippet,
+  gitlabCiAuthSnippet,
+  issuerLabel,
+  setupWif,
+  GITHUB_OIDC_ISSUER,
+  GITLAB_OIDC_ISSUER,
+} from '../src/wif.js';
 
 afterEach(() => {
   mock.restoreAll();
@@ -15,7 +23,6 @@ afterEach(() => {
 test('parseWifTarget accepts github:owner/repo and rejects the rest', () => {
   assert.deepEqual(parseWifTarget('github:acme/widgets'), { provider: 'github', repo: 'acme/widgets' });
   assert.deepEqual(parseWifTarget('github:my-org/my.repo_v2'), { provider: 'github', repo: 'my-org/my.repo_v2' });
-  assert.throws(() => parseWifTarget('gitlab:acme/widgets'), /Only "github:owner\/repo"/);
   assert.throws(() => parseWifTarget('github:no-slash'), /Invalid GitHub repo/);
   assert.throws(() => parseWifTarget('github:acme/'), /Invalid GitHub repo/);
 });
@@ -165,9 +172,11 @@ test('seed --wif reuses an existing pool/provider (409) instead of failing', asy
       locations: {
         workloadIdentityPools: {
           create: mock.fn(conflict),
+          get: mock.fn(async () => ({ data: { state: 'ACTIVE' } })),
           operations: { get: mock.fn(async () => ({ data: { done: true } })) },
           providers: {
             create: mock.fn(conflict),
+            get: mock.fn(async () => ({ data: { state: 'ACTIVE' } })),
             operations: { get: mock.fn(async () => ({ data: { done: true } })) },
           },
         },
@@ -313,4 +322,227 @@ test('seed --wif without any service account fails before creating anything', as
     }),
     /wif requires at least one service account/,
   );
+});
+
+// ---- J: GitLab provider + undelete handling --------------------------------
+
+test('parseWifTarget accepts gitlab:group/project incl. nested groups and rejects bad paths', () => {
+  assert.deepEqual(parseWifTarget('gitlab:acme/widgets'), { provider: 'gitlab', repo: 'acme/widgets' });
+  assert.deepEqual(parseWifTarget('gitlab:acme/platform/infra.tools'), {
+    provider: 'gitlab',
+    repo: 'acme/platform/infra.tools',
+  });
+  assert.deepEqual(parseWifTarget('gitlab:_grp/my_proj-2'), { provider: 'gitlab', repo: '_grp/my_proj-2' });
+  for (const bad of [
+    'gitlab:solo',
+    'gitlab:acme/',
+    'gitlab:/widgets',
+    'gitlab:acme//widgets',
+    'gitlab:acme/widgets.git',
+    'gitlab:acme/-bad',
+    'gitlab:acme/bad.',
+    "gitlab:acme/w' || true || '",
+    'gitlab:acme/wid gets',
+  ]) {
+    assert.throws(() => parseWifTarget(bad), /Invalid GitLab project/, bad);
+  }
+  assert.throws(() => parseWifTarget('bitbucket:acme/widgets'), /Unsupported --wif provider/);
+});
+
+test('issuerLabel classifies issuer URIs', () => {
+  assert.equal(issuerLabel(GITHUB_OIDC_ISSUER), 'github');
+  assert.equal(issuerLabel('https://gitlab.com'), 'gitlab');
+  assert.equal(issuerLabel('https://gitlab.com/'), 'gitlab');
+  assert.equal(issuerLabel('https://gitlab.example.com'), 'other');
+  assert.equal(issuerLabel('https://accounts.google.com'), 'other');
+  assert.equal(issuerLabel(undefined), 'unknown');
+  assert.equal(issuerLabel(''), 'unknown');
+});
+
+interface IamMockOpts {
+  poolCreate?: () => Promise<unknown>;
+  providerCreate?: () => Promise<unknown>;
+  poolState?: string;
+  providerState?: string;
+}
+
+function mockIam(o: IamMockOpts = {}) {
+  const done = () => mock.fn(async () => ({ data: { done: true } }));
+  const m = {
+    poolCreate: mock.fn(o.poolCreate ?? (async () => ({ data: { name: 'op/pool' } }))),
+    poolGet: mock.fn(async () => ({ data: { state: o.poolState ?? 'ACTIVE' } })),
+    poolUndelete: mock.fn(async () => ({ data: { name: 'op/pool-undelete' } })),
+    poolOpGet: done(),
+    providerCreate: mock.fn(o.providerCreate ?? (async () => ({ data: { name: 'op/prov' } }))),
+    providerGet: mock.fn(async () => ({ data: { state: o.providerState ?? 'ACTIVE' } })),
+    providerUndelete: mock.fn(async () => ({ data: { name: 'op/prov-undelete' } })),
+    providerOpGet: done(),
+    getIamPolicy: mock.fn(async () => ({ data: { bindings: [], etag: 'e0' } })),
+    setIamPolicy: mock.fn(async (_req: unknown) => ({ data: {} })),
+  };
+  mock.method(google, 'iam', () => ({
+    projects: {
+      serviceAccounts: { getIamPolicy: m.getIamPolicy, setIamPolicy: m.setIamPolicy },
+      locations: {
+        workloadIdentityPools: {
+          create: m.poolCreate,
+          get: m.poolGet,
+          undelete: m.poolUndelete,
+          operations: { get: m.poolOpGet },
+          providers: {
+            create: m.providerCreate,
+            get: m.providerGet,
+            undelete: m.providerUndelete,
+            operations: { get: m.providerOpGet },
+          },
+        },
+      },
+    },
+  }) as never);
+  return m;
+}
+
+const conflict = async () => {
+  throw Object.assign(new Error('Requested entity already exists'), { code: 409 });
+};
+
+function boundMembers(m: ReturnType<typeof mockIam>): string[] {
+  const req = m.setIamPolicy.mock.calls[0].arguments[0] as {
+    requestBody: { policy: { bindings: { role: string; members: string[] }[] } };
+  };
+  return req.requestBody.policy.bindings.find((b) => b.role === 'roles/iam.workloadIdentityUser')!.members;
+}
+
+const SA = 'ci@p.iam.gserviceaccount.com';
+
+test('setupWif(gitlab) locks the provider to exactly one project and writes the gitlab-ci snippet', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  const m = mockIam();
+  const outputDir = await mkdtemp(path.join(tmpdir(), 'wif-gl-'));
+  try {
+    const res = await drain(
+      setupWif(
+        {} as never,
+        {
+          projectId: 'p',
+          projectNumber: '123456',
+          serviceAccountEmail: SA,
+          target: { provider: 'gitlab', repo: 'acme/platform/widgets' },
+          outputDir,
+        },
+        () => {},
+      ),
+    );
+
+    const poolReq = m.poolCreate.mock.calls[0].arguments[0] as { workloadIdentityPoolId: string };
+    assert.equal(poolReq.workloadIdentityPoolId, 'gl-pool');
+
+    const provReq = m.providerCreate.mock.calls[0].arguments[0] as {
+      parent: string;
+      workloadIdentityPoolProviderId: string;
+      requestBody: { oidc: { issuerUri: string }; attributeMapping: Record<string, string>; attributeCondition: string };
+    };
+    assert.equal(provReq.parent, 'projects/p/locations/global/workloadIdentityPools/gl-pool');
+    assert.equal(provReq.workloadIdentityPoolProviderId, 'gl-acme-platform-widgets');
+    assert.equal(provReq.requestBody.oidc.issuerUri, 'https://gitlab.com');
+    assert.equal(provReq.requestBody.oidc.issuerUri, GITLAB_OIDC_ISSUER);
+    assert.deepEqual(provReq.requestBody.attributeMapping, {
+      'google.subject': 'assertion.sub',
+      'attribute.project_path': 'assertion.project_path',
+    });
+    assert.equal(provReq.requestBody.attributeCondition, "assertion.project_path == 'acme/platform/widgets'");
+
+    assert.deepEqual(boundMembers(m), [
+      'principalSet://iam.googleapis.com/projects/123456/locations/global/workloadIdentityPools/gl-pool/attribute.project_path/acme/platform/widgets',
+    ]);
+
+    const providerResource =
+      'projects/123456/locations/global/workloadIdentityPools/gl-pool/providers/gl-acme-platform-widgets';
+    assert.equal(res.providerResourceName, providerResource);
+    assert.equal(res.repo, 'acme/platform/widgets');
+    assert.equal(res.workflowSnippetFile, path.join(outputDir, 'gitlab-ci-auth.yml'));
+    const snippet = await readFile(res.workflowSnippetFile!, 'utf8');
+    assert.equal(snippet, gitlabCiAuthSnippet(providerResource, SA));
+    assert.match(snippet, /id_tokens:\n {4}GITLAB_OIDC_TOKEN:\n {6}aud: https:\/\/iam\.googleapis\.com\/projects\/123456\/locations\/global\/workloadIdentityPools\/gl-pool\/providers\/gl-acme-platform-widgets\n/);
+    assert.ok(snippet.includes(`gcloud iam workload-identity-pools create-cred-config ${providerResource}`));
+    assert.ok(snippet.includes(`--service-account=${SA}`));
+    assert.match(snippet, /--credential-source-file=\S+/);
+    assert.match(snippet, /--output-file=\S+/);
+    assert.match(snippet, /gcloud auth login --cred-file=\S+/);
+  } finally {
+    await rm(outputDir, { recursive: true, force: true });
+  }
+});
+
+test('setupWif(github) keeps its exact repo condition and principal (regression)', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  const m = mockIam();
+  const res = await drain(
+    setupWif(
+      {} as never,
+      { projectId: 'p', projectNumber: '42', serviceAccountEmail: SA, target: { provider: 'github', repo: 'acme/widgets' } },
+      () => {},
+    ),
+  );
+  const poolReq = m.poolCreate.mock.calls[0].arguments[0] as { workloadIdentityPoolId: string };
+  assert.equal(poolReq.workloadIdentityPoolId, 'gh-pool');
+  const provReq = m.providerCreate.mock.calls[0].arguments[0] as {
+    workloadIdentityPoolProviderId: string;
+    requestBody: { oidc: { issuerUri: string }; attributeCondition: string };
+  };
+  assert.equal(provReq.workloadIdentityPoolProviderId, 'gh-acme-widgets');
+  assert.equal(provReq.requestBody.oidc.issuerUri, GITHUB_OIDC_ISSUER);
+  assert.equal(provReq.requestBody.attributeCondition, "assertion.repository == 'acme/widgets'");
+  assert.deepEqual(boundMembers(m), [
+    'principalSet://iam.googleapis.com/projects/42/locations/global/workloadIdentityPools/gh-pool/attribute.repository/acme/widgets',
+  ]);
+  assert.equal(res.workflowSnippetFile, undefined);
+});
+
+test('setupWif undeletes a soft-deleted pool and provider after a 409, then continues', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  const m = mockIam({ poolCreate: conflict, providerCreate: conflict, poolState: 'DELETED', providerState: 'DELETED' });
+  const logs: string[] = [];
+  const res = await drain(
+    setupWif(
+      {} as never,
+      { projectId: 'p', projectNumber: '42', serviceAccountEmail: SA, target: { provider: 'gitlab', repo: 'acme/widgets' } },
+      (msg) => logs.push(msg),
+    ),
+  );
+  assert.equal(m.poolGet.mock.callCount(), 1);
+  assert.deepEqual(m.poolGet.mock.calls[0].arguments[0], { name: 'projects/p/locations/global/workloadIdentityPools/gl-pool' });
+  assert.equal(m.poolUndelete.mock.callCount(), 1);
+  assert.equal(
+    (m.poolUndelete.mock.calls[0].arguments[0] as { name: string }).name,
+    'projects/p/locations/global/workloadIdentityPools/gl-pool',
+  );
+  assert.ok(m.poolOpGet.mock.calls.some((c) => (c.arguments[0] as { name: string }).name === 'op/pool-undelete'));
+  assert.equal(m.providerUndelete.mock.callCount(), 1);
+  assert.equal(
+    (m.providerUndelete.mock.calls[0].arguments[0] as { name: string }).name,
+    'projects/p/locations/global/workloadIdentityPools/gl-pool/providers/gl-acme-widgets',
+  );
+  assert.ok(m.providerOpGet.mock.calls.some((c) => (c.arguments[0] as { name: string }).name === 'op/prov-undelete'));
+  assert.ok(logs.some((l) => /pool "gl-pool" is soft-deleted/.test(l)));
+  assert.ok(logs.some((l) => /provider "gl-acme-widgets" undeleted/.test(l)));
+  assert.equal(m.setIamPolicy.mock.callCount(), 1, 'continued on to the binding');
+  assert.equal(res.poolId, 'gl-pool');
+});
+
+test('setupWif reuses an ACTIVE pool/provider after a 409 without undeleting', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  const m = mockIam({ poolCreate: conflict, providerCreate: conflict });
+  await drain(
+    setupWif(
+      {} as never,
+      { projectId: 'p', projectNumber: '42', serviceAccountEmail: SA, target: { provider: 'github', repo: 'acme/widgets' } },
+      () => {},
+    ),
+  );
+  assert.equal(m.poolGet.mock.callCount(), 1);
+  assert.equal(m.providerGet.mock.callCount(), 1);
+  assert.equal(m.poolUndelete.mock.callCount(), 0);
+  assert.equal(m.providerUndelete.mock.callCount(), 0);
+  assert.equal(m.setIamPolicy.mock.callCount(), 1);
 });

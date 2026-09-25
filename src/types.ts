@@ -36,13 +36,13 @@ export interface ServiceAccountSpec {
 }
 
 /**
- * A keyless-auth target for Workload Identity Federation. Only GitHub OIDC is
- * supported today; `provider` is kept explicit so other OIDC providers can be
- * added without changing the flag shape.
+ * A keyless-auth target for Workload Identity Federation: GitHub Actions or
+ * GitLab CI (gitlab.com) OIDC. For `github`, `repo` is "owner/repo"; for
+ * `gitlab`, `repo` is the full project path "group[/subgroup...]/project".
  */
 export interface WifTarget {
-  provider: 'github';
-  /** "owner/repo" whose GitHub Actions OIDC tokens may impersonate the SA. */
+  provider: 'github' | 'gitlab';
+  /** "owner/repo" (GitHub) or "group/project" (GitLab) whose CI OIDC tokens may impersonate the SA. */
   repo: string;
 }
 
