@@ -3,6 +3,7 @@ import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { PRESETS, PROVISIONING_PRESETS } from './apis.js';
 import { parseWifTarget } from './wif.js';
+import { PRESET_ROLES, validateRoles } from './roles.js';
 import type { SeedOptions, ServiceAccountSpec } from './types.js';
 
 /**
@@ -25,10 +26,15 @@ const ManifestSchema = z
           displayName: z.string().optional(),
           keyFile: z.string().optional(),
           dwdScopes: z.array(z.string()).optional(),
+          roles: z.array(z.string()).optional(),
         }),
       )
       .optional(),
     wif: z.string().optional(),
+    billingAccount: z.string().optional(),
+    roles: z.array(z.string()).optional(),
+    wait: z.boolean().optional(),
+    harden: z.boolean().optional(),
     ttl: z.string().optional(),
     oauthClient: z.boolean().optional(),
     supportEmail: z.string().optional(),
@@ -69,6 +75,7 @@ export function manifestToSeedOptions(m: Manifest): SeedOptions {
     displayName: s.displayName ?? s.id,
     keyFile: s.keyFile ?? `${s.id}-sa.json`,
     dwdScopes: s.dwdScopes,
+    roles: s.roles ? validateRoles(s.roles) : undefined,
   }));
   const serviceAccounts = declaredSas.length ? declaredSas : (provisioning?.serviceAccounts ?? []);
   const apis = [...new Set([...(provisioning?.apis ?? simplePreset ?? []), ...(m.apis ?? [])])];
@@ -76,11 +83,18 @@ export function manifestToSeedOptions(m: Manifest): SeedOptions {
   // WIF needs an SA to bind; imply one if the manifest didn't declare any.
   const impliedSa = Boolean(m.wif) && serviceAccounts.length === 0;
 
+  // Roles: explicit list wins; otherwise the preset's least-privilege default.
+  const roles = m.roles ? validateRoles(m.roles) : m.preset ? PRESET_ROLES[m.preset] : undefined;
+
   return {
     projectId: m.projectId,
     displayName: m.displayName,
     parent: m.parent,
     apis,
+    billingAccount: m.billingAccount,
+    roles: roles?.length ? roles : undefined,
+    wait: m.wait,
+    harden: m.harden,
     credentials: { serviceAccount: Boolean(m.serviceAccount) || impliedSa, oauthClient: Boolean(m.oauthClient) },
     serviceAccounts: serviceAccounts.length ? serviceAccounts : undefined,
     wif: m.wif ? parseWifTarget(m.wif) : undefined,

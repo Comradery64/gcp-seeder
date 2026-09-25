@@ -33,6 +33,11 @@ export interface ServiceAccountSpec {
    * id + these scopes for you to authorize by hand in the Admin console.
    */
   dwdScopes?: string[];
+  /**
+   * Project-level IAM roles to grant this SA (e.g. ["roles/aiplatform.user"]).
+   * Overrides `SeedOptions.roles` for this SA. Keep these minimal.
+   */
+  roles?: string[];
 }
 
 /**
@@ -134,6 +139,31 @@ export interface SeedOptions {
    * lapses. Omit for a project with no expiry.
    */
   ttl?: string;
+  /**
+   * Billing account to link right after the project is created (before APIs
+   * are enabled — most non-Workspace APIs refuse to enable on an unbilled
+   * project). "012345-ABCDEF-678901" or "billingAccounts/…". Omit to leave the
+   * project unbilled.
+   */
+  billingAccount?: string;
+  /**
+   * Project-level IAM roles granted to every created service account, unless
+   * a `ServiceAccountSpec.roles` overrides it. Least privilege: pass the
+   * specific roles the consumer needs, never owner/editor.
+   */
+  roles?: string[];
+  /**
+   * After enabling APIs, wait until they are actually usable (Service Usage
+   * reports ENABLED and a cheap probe call succeeds) before continuing.
+   * Default true; set false to skip the wait.
+   */
+  wait?: boolean;
+  /**
+   * Delete the default VPC network (and its firewall rules) and remove
+   * roles/editor from the default compute service account. Enables the
+   * Compute API to do so. Default false.
+   */
+  harden?: boolean;
   /**
    * Reconcile mode (used by manifest apply): treat an already-existing project
    * or service account as success and continue, rather than failing. Existing
@@ -410,7 +440,20 @@ export interface SeedResult {
     keyFile: string | null;
     /** OAuth client id (uniqueId) — used for domain-wide-delegation grants. */
     clientId: string;
+    /** Project roles granted to this SA during this run (already-held roles are not repeated). */
+    roles?: string[];
   }>;
+  /** Billing account linked to the project, if one was. */
+  billingAccount?: string;
+  /** Per-API readiness probe outcome (only when `wait` was not disabled). */
+  readiness?: Array<{ api: string; status: 'ready' | 'timeout' | 'skipped' }>;
+  /** What `harden` removed, if requested. */
+  hardening?: {
+    defaultNetworkDeleted: boolean;
+    firewallRulesDeleted: string[];
+    defaultComputeSaEditorRemoved: boolean;
+    skipped: string[];
+  };
   /**
    * Domain-wide-delegation grants still to authorize by hand (one per SA that
    * declared `dwdScopes`). No API can create these.

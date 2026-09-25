@@ -42,7 +42,7 @@ function mockCoreApis() {
   const batchEnable = mock.fn(async () => ({ data: { name: 'operations/su1' } }));
   const suGet = mock.fn(async () => ({ data: { done: true } }));
   mock.method(google, 'cloudresourcemanager', () => ({ projects: { create }, operations: { get: crmGet } }) as never);
-  mock.method(google, 'serviceusage', () => ({ services: { batchEnable }, operations: { get: suGet } }) as never);
+  mock.method(google, 'serviceusage', () => ({ services: { batchEnable, get: async () => ({ data: { state: 'ENABLED' } }) }, operations: { get: suGet } }) as never);
   return { batchEnable };
 }
 

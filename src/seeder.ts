@@ -6,7 +6,11 @@ import type { AuthClient } from 'google-auth-library';
 import { BOOTSTRAP_APIS } from './apis.js';
 import { resolveAuth } from './auth.js';
 import { buildSeedLabels } from './labels.js';
-import { setupGithubWif, WIF_APIS } from './wif.js';
+import { setupWif, WIF_APIS } from './wif.js';
+import { linkBillingAccount } from './billing.js';
+import { grantServiceAccountRoles } from './roles.js';
+import { probeApisReady, waitForServicesEnabled, withApiReadyRetry } from './readiness.js';
+import { hardenProjectDefaults } from './harden.js';
 import type { SeedOptions, SeedResult, ServiceAccountSpec, WifResult } from './types.js';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -325,9 +329,16 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
 
   const projectNumber = await createProject(auth, projectId, displayName, options.parent, labels, reconcile, log);
 
+  // Link billing BEFORE enabling APIs: most non-Workspace services refuse to
+  // enable on an unbilled project, and API-created projects start unbilled.
+  if (options.billingAccount) {
+    await linkBillingAccount(auth, projectId, options.billingAccount, log);
+  }
+
   const apisToEnable = dedupe([
     ...BOOTSTRAP_APIS,
     ...(options.wif ? WIF_APIS : []),
+    ...(options.harden ? ['compute.googleapis.com'] : []),
     ...options.apis,
   ]);
   const enabledApis = await enableApis(auth, projectId, apisToEnable, log);
@@ -339,6 +350,23 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
     labels,
     warnings: [],
   };
+  if (options.billingAccount) result.billingAccount = options.billingAccount;
+
+  // "Enabled" is not "usable": Service Usage returns before the API accepts
+  // calls (the #1 GCP bootstrap complaint). Wait, then actively probe.
+  const wait = options.wait !== false;
+  if (wait) {
+    log('Waiting for the enabled APIs to become usable…');
+    await waitForServicesEnabled(auth, projectId, apisToEnable, { log });
+    result.readiness = await probeApisReady(auth, projectId, apisToEnable, { log });
+    const slow = result.readiness.filter((r) => r.status === 'timeout').map((r) => r.api);
+    if (slow.length) {
+      result.warnings.push(
+        `These APIs were enabled but still not accepting calls after the wait: ${slow.join(', ')}. ` +
+          'They usually settle within a few minutes; retry your first call if it 403s.',
+      );
+    }
+  }
 
   // Resolve which service accounts to mint. An explicit `serviceAccounts` list
   // wins; otherwise `credentials.serviceAccount: true` implies one default SA.
@@ -355,7 +383,7 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
     result.serviceAccounts = [];
     result.dwdGrants = [];
     for (const spec of saSpecs) {
-      const sa = await createServiceAccount(auth, projectId, spec, reconcile, log);
+      const sa = await withApiReadyRetry(() => createServiceAccount(auth, projectId, spec, reconcile, log), { log });
       // The SA is created; a downloadable key can still be blocked by org policy.
       // Don't discard the SA over that — record a warning and carry on (like the
       // OAuth-client path). The SA + its client id are still returned.
@@ -366,7 +394,10 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
         log(`  keeping existing key(s) for ${sa.email} (reconcile)`);
       } else {
       try {
-        keyFile = await mintServiceAccountKey(auth, sa.resourceName, outputDir, spec.keyFile, log);
+        keyFile = await withApiReadyRetry(
+          () => mintServiceAccountKey(auth, sa.resourceName, outputDir, spec.keyFile, log),
+          { log },
+        );
       } catch (err) {
         if (isKeyCreationBlocked(err)) {
           result.warnings.push(
@@ -381,7 +412,11 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
         }
       }
       }
-      result.serviceAccounts.push({ email: sa.email, keyFile, clientId: sa.clientId });
+      // Project roles: a key with no roles 403s on its first call. Explicit
+      // per-SA roles win over the run-wide list. Idempotent (existing grants kept).
+      const roles = spec.roles ?? options.roles ?? [];
+      const grantedRoles = roles.length ? await grantServiceAccountRoles(auth, projectId, sa.email, roles, log) : [];
+      result.serviceAccounts.push({ email: sa.email, keyFile, clientId: sa.clientId, ...(roles.length ? { roles: grantedRoles } : {}) });
       if (spec.dwdScopes?.length) {
         result.dwdGrants.push({
           serviceAccountEmail: sa.email,
@@ -405,13 +440,13 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
         // actionable warning. Re-running `seed --wif` is idempotent and finishes.
         try {
           wifResults.push(
-            await setupGithubWif(
+            await setupWif(
               auth,
               {
                 projectId,
                 projectNumber,
                 serviceAccountEmail: sa.email,
-                repo: options.wif.repo,
+                target: options.wif,
                 outputDir,
               },
               log,
@@ -429,6 +464,13 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
       }
       if (wifResults.length) result.wif = wifResults;
     }
+  }
+
+  // Remove the permissive defaults every new project ships with. The default
+  // compute SA is demoted (roles/editor removed), never deleted.
+  if (options.harden) {
+    log('Hardening project defaults…');
+    result.hardening = await hardenProjectDefaults(auth, projectId, projectNumber, {}, log);
   }
 
   if (options.credentials.oauthClient) {

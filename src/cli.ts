@@ -12,6 +12,9 @@ import { rotateServiceAccountKey } from './rotate.js';
 import { parseWifTarget } from './wif.js';
 import { exportProjectTerraform } from './export.js';
 import { explainGoogleError, formatExplainedError } from './errors.js';
+import { resolveBillingAccount } from './billing.js';
+import { PRESET_ROLES, validateRoles } from './roles.js';
+import { resolveAuth } from './auth.js';
 import { loadManifest, manifestToSeedOptions } from './manifest.js';
 import { VERSION } from './version.js';
 import type { AuditReport, CredentialTargets, DestroyResult, SeedResult, ServiceAccountSpec, SweepResult } from './types.js';
@@ -38,7 +41,11 @@ program
   .option('--service-account', 'Create a single default service account + key')
   .option('--service-accounts <names>', 'Create one named service account + key per comma-separated name')
   .option('--dwd-scopes <csv>', 'OAuth scopes to surface for domain-wide delegation on the created SAs')
-  .option('--wif <target>', 'Keyless GitHub Actions auth via Workload Identity Federation, e.g. github:owner/repo')
+  .option('--wif <target>', 'Keyless CI auth via Workload Identity Federation, e.g. github:owner/repo or gitlab:group/project')
+  .option('--billing-account <id>', 'Billing account to link (auto-detected when you have exactly one)')
+  .option('--roles <csv>', 'Project IAM roles to grant the created service account(s) (preset default if omitted)')
+  .option('--no-wait', 'Do not wait for enabled APIs to become usable')
+  .option('--harden', 'Delete the default network and demote the default compute SA')
   .option('--oauth-client', 'Create an OAuth client + consent screen')
   .option('--support-email <email>', 'Consent-screen support email (for --oauth-client)')
   .option('--output-dir <dir>', 'Where to write credentials', './credentials')
@@ -311,6 +318,10 @@ interface CliOptions {
   serviceAccounts?: string;
   dwdScopes?: string;
   wif?: string;
+  billingAccount?: string;
+  roles?: string;
+  wait?: boolean;
+  harden?: boolean;
   oauthClient?: boolean;
   supportEmail?: string;
   outputDir: string;
@@ -333,8 +344,10 @@ async function run(opts: CliOptions): Promise<void> {
   if (opts.manifest) {
     const seedOpts = manifestToSeedOptions(await loadManifest(opts.manifest));
     if (!json) console.log(`\nApplying manifest ${opts.manifest} (reconcile)…`);
+    const billingAccount = await resolveBillingForCli(seedOpts.billingAccount ?? opts.billingAccount, seedOpts.apis, interactive, json);
     const result = await seedProject({
       ...seedOpts,
+      billingAccount,
       outputDir: seedOpts.outputDir ?? opts.outputDir,
       logger: json ? () => {} : log,
     });
@@ -344,11 +357,13 @@ async function run(opts: CliOptions): Promise<void> {
     }
     console.log('\n✓ Applied.');
     console.log(`  Project:  ${result.projectId} (${result.projectNumber})`);
+    if (result.billingAccount) console.log(`  Billing:  ${result.billingAccount}`);
     console.log(`  APIs:     ${result.enabledApis.length} enabled`);
     if (result.labels.expires) console.log(`  Expires:  ${result.labels.expires}`);
     for (const sa of result.serviceAccounts ?? []) {
-      console.log(`  SA:       ${sa.email}${sa.keyFile ? `  (key ${sa.keyFile})` : ''}`);
+      console.log(`  SA:       ${sa.email}${sa.keyFile ? `  (key ${sa.keyFile})` : ''}${sa.roles?.length ? `  roles: ${sa.roles.join(', ')}` : ''}`);
     }
+    printHardening(result);
     for (const w of result.warnings) console.warn(`  ⚠ ${w}`);
     printWifGuidance(result);
     printDwdGuidance(result);
@@ -391,6 +406,14 @@ async function run(opts: CliOptions): Promise<void> {
     credentials = { ...credentials, serviceAccount: true };
   }
 
+  // Roles for the SA(s): explicit --roles wins, else the preset's least-privilege default.
+  const roles = opts.roles
+    ? validateRoles(opts.roles.split(',').map((r) => r.trim()).filter(Boolean))
+    : opts.preset
+      ? PRESET_ROLES[opts.preset]
+      : undefined;
+  const billingAccount = await resolveBillingForCli(opts.billingAccount, apis, interactive, json);
+
   let supportEmail = opts.supportEmail;
   if (credentials.oauthClient && !supportEmail && interactive) {
     supportEmail = await input({
@@ -410,8 +433,11 @@ async function run(opts: CliOptions): Promise<void> {
     console.log(`  project       ${projectId}`);
     console.log(`  apis          ${apis.length ? apis.join(', ') : '(none)'}`);
     console.log(`  service acct  ${saSummary}`);
-    console.log(`  keyless (wif) ${wif ? `yes (github:${wif.repo})` : 'no'}`);
+    if (roles?.length) console.log(`  sa roles      ${roles.join(', ')}`);
+    console.log(`  billing       ${billingAccount ?? 'none (project stays unbilled)'}`);
+    console.log(`  keyless (wif) ${wif ? `yes (${wif.provider}:${wif.repo})` : 'no'}`);
     console.log(`  oauth client  ${credentials.oauthClient ? 'yes' : 'no'}`);
+    console.log(`  harden        ${opts.harden ? 'yes (delete default network, demote default compute SA)' : 'no'}`);
     console.log(`  ttl           ${opts.ttl ?? 'none (no expiry)'}`);
     console.log(`  output dir    ${opts.outputDir}\n`);
   }
@@ -429,6 +455,10 @@ async function run(opts: CliOptions): Promise<void> {
     credentials,
     serviceAccounts,
     wif,
+    billingAccount,
+    roles: roles?.length ? roles : undefined,
+    wait: opts.wait,
+    harden: opts.harden,
     ttl: opts.ttl,
     supportEmail,
     outputDir: opts.outputDir,
@@ -442,16 +472,19 @@ async function run(opts: CliOptions): Promise<void> {
 
   console.log('\n✓ Done!');
   console.log(`  Project:  ${result.projectId} (${result.projectNumber})`);
+  if (result.billingAccount) console.log(`  Billing:  ${result.billingAccount}`);
   console.log(`  APIs:     ${result.enabledApis.length} enabled`);
   if (result.labels.expires) console.log(`  Expires:  ${result.labels.expires}  (sweep will remove it after this date)`);
   if (result.serviceAccounts?.length) {
     for (const sa of result.serviceAccounts) {
       if (sa.keyFile) console.log(`  SA key:   ${sa.keyFile}  (${sa.email})`);
       else console.log(`  SA:       ${sa.email}  (created, no key — see warnings)`);
+      if (sa.roles?.length) console.log(`            roles granted: ${sa.roles.join(', ')}`);
     }
   } else if (result.serviceAccount) {
     console.log(`  SA key:   ${result.serviceAccount.keyFile}`);
   }
+  printHardening(result);
   if (result.oauthClient) console.log(`  OAuth:    ${result.oauthClient.clientSecretsFile}`);
   for (const w of result.warnings) console.warn(`  ⚠ ${w}`);
 
@@ -497,6 +530,53 @@ function printDwdGuidance(result: SeedResult, notes?: string[]): void {
     console.log('\nNotes:');
     for (const n of notes) console.log(`  - ${n}`);
   }
+}
+
+/** APIs that will not enable on an unbilled project. Used to phrase the "no billing" warning. */
+const BILLING_REQUIRED_HINT = /^(aiplatform|run|cloudfunctions|bigquery|storage|pubsub|firestore|compute|speech|texttospeech|vision|translate|generativelanguage)\.googleapis\.com$/;
+
+/**
+ * Pick the billing account for a seed run. An explicit id is validated; with
+ * none, a single open account is auto-picked, several prompt (interactive) or
+ * warn (non-interactive), and zero warns when the requested APIs need billing.
+ */
+async function resolveBillingForCli(
+  requested: string | undefined,
+  apis: string[],
+  interactive: boolean,
+  json: boolean,
+): Promise<string | undefined> {
+  const auth = await resolveAuth();
+  const { account, candidates } = await resolveBillingAccount(auth, requested);
+  if (account) return account;
+  if (candidates.length > 1 && interactive) {
+    return select({
+      message: 'Which billing account should this project use?',
+      choices: [
+        ...candidates.map((c) => ({ name: `${c.displayName}  (${c.name.replace('billingAccounts/', '')})`, value: c.name })),
+        { name: 'None — leave the project unbilled', value: '' },
+      ],
+    }).then((v) => v || undefined);
+  }
+  const needsBilling = apis.filter((a) => BILLING_REQUIRED_HINT.test(a));
+  if (!json && candidates.length > 1) {
+    console.warn(`⚠ Several billing accounts found — pass --billing-account <id> to link one. Project will be unbilled.`);
+  } else if (!json && needsBilling.length) {
+    console.warn(
+      `⚠ No billing account is linked; these APIs will likely fail to enable without one: ${needsBilling.join(', ')}. ` +
+        'Pass --billing-account <id>.',
+    );
+  }
+  return undefined;
+}
+
+function printHardening(result: SeedResult): void {
+  const h = result.hardening;
+  if (!h) return;
+  console.log(
+    `  Hardened: default network ${h.defaultNetworkDeleted ? 'deleted' : 'not found'}` +
+      ` (${h.firewallRulesDeleted.length} firewall rule(s)); default compute SA editor ${h.defaultComputeSaEditorRemoved ? 'removed' : 'already absent'}`,
+  );
 }
 
 async function resolveApis(opts: CliOptions, interactive: boolean): Promise<string[]> {

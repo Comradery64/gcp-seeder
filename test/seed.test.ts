@@ -50,7 +50,7 @@ test('happy path: creates the project and enables the requested APIs', async () 
   const batchEnable = mock.fn(async () => ({ data: { name: 'operations/su1' } }));
   const suGet = mock.fn(async () => ({ data: { done: true } }));
   mock.method(google, 'cloudresourcemanager', () => ({ projects: { create }, operations: { get: crmGet } }) as never);
-  mock.method(google, 'serviceusage', () => ({ services: { batchEnable }, operations: { get: suGet } }) as never);
+  mock.method(google, 'serviceusage', () => ({ services: { batchEnable, get: async () => ({ data: { state: 'ENABLED' } }) }, operations: { get: suGet } }) as never);
 
   const promise = seedProject({
     projectId: 'seed-unit-1',
@@ -81,7 +81,7 @@ test('creates multiple named service accounts and surfaces DWD grants', async ()
   const batchEnable = mock.fn(async () => ({ data: { name: 'operations/su1' } }));
   const suGet = mock.fn(async () => ({ data: { done: true } }));
   mock.method(google, 'cloudresourcemanager', () => ({ projects: { create }, operations: { get: crmGet } }) as never);
-  mock.method(google, 'serviceusage', () => ({ services: { batchEnable }, operations: { get: suGet } }) as never);
+  mock.method(google, 'serviceusage', () => ({ services: { batchEnable, get: async () => ({ data: { state: 'ENABLED' } }) }, operations: { get: suGet } }) as never);
 
   // Each SA create returns a distinct email + uniqueId (the DWD client id).
   let n = 0;
@@ -136,7 +136,7 @@ test('org policy blocking SA key creation warns instead of throwing', async () =
   const batchEnable = mock.fn(async () => ({ data: { name: 'operations/su1' } }));
   const suGet = mock.fn(async () => ({ data: { done: true } }));
   mock.method(google, 'cloudresourcemanager', () => ({ projects: { create }, operations: { get: crmGet } }) as never);
-  mock.method(google, 'serviceusage', () => ({ services: { batchEnable }, operations: { get: suGet } }) as never);
+  mock.method(google, 'serviceusage', () => ({ services: { batchEnable, get: async () => ({ data: { state: 'ENABLED' } }) }, operations: { get: suGet } }) as never);
 
   // SA creation succeeds, but the org forbids downloadable keys.
   const saCreate = mock.fn(async () => ({ data: { name: 'projects/p/serviceAccounts/sa1', email: 'sa1@p.iam.gserviceaccount.com', uniqueId: '111' } }));
