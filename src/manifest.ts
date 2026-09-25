@@ -35,6 +35,15 @@ const ManifestSchema = z
     roles: z.array(z.string()).optional(),
     wait: z.boolean().optional(),
     harden: z.boolean().optional(),
+    budget: z
+      .object({
+        amountUsd: z.number().positive(),
+        thresholds: z.array(z.number()).optional(),
+        topic: z.string().optional(),
+        killSwitch: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
     ttl: z.string().optional(),
     oauthClient: z.boolean().optional(),
     supportEmail: z.string().optional(),
@@ -95,6 +104,7 @@ export function manifestToSeedOptions(m: Manifest): SeedOptions {
     roles: roles?.length ? roles : undefined,
     wait: m.wait,
     harden: m.harden,
+    budget: m.budget,
     credentials: { serviceAccount: Boolean(m.serviceAccount) || impliedSa, oauthClient: Boolean(m.oauthClient) },
     serviceAccounts: serviceAccounts.length ? serviceAccounts : undefined,
     wif: m.wif ? parseWifTarget(m.wif) : undefined,

@@ -11,6 +11,7 @@ import { linkBillingAccount } from './billing.js';
 import { grantServiceAccountRoles } from './roles.js';
 import { probeApisReady, waitForServicesEnabled, withApiReadyRetry } from './readiness.js';
 import { hardenProjectDefaults } from './harden.js';
+import { ensureBudget, ensureTopic, writeKillSwitchTemplate } from './budget.js';
 import type { SeedOptions, SeedResult, ServiceAccountSpec, WifResult } from './types.js';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -323,6 +324,13 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
     );
   }
 
+  if (options.budget && !options.billingAccount) {
+    throw new Error('options.budget requires options.billingAccount (a budget lives on the billing account).');
+  }
+  if (options.budget && !(options.budget.amountUsd > 0)) {
+    throw new Error('options.budget.amountUsd must be a positive number.');
+  }
+
   // Build labels up front so an invalid --ttl fails before anything is created.
   const labels = buildSeedLabels({ ttl: options.ttl });
   const reconcile = options.reconcile === true;
@@ -339,6 +347,8 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
     ...BOOTSTRAP_APIS,
     ...(options.wif ? WIF_APIS : []),
     ...(options.harden ? ['compute.googleapis.com'] : []),
+    ...(options.budget ? ['billingbudgets.googleapis.com'] : []),
+    ...(options.budget?.topic || options.budget?.killSwitch ? ['pubsub.googleapis.com'] : []),
     ...options.apis,
   ]);
   const enabledApis = await enableApis(auth, projectId, apisToEnable, log);
@@ -463,6 +473,28 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
         }
       }
       if (wifResults.length) result.wif = wifResults;
+    }
+  }
+
+  // Budget: alerts on the billing account, scoped to this project. Optional
+  // Pub/Sub topic + a written (never deployed) kill-switch template.
+  if (options.budget && options.billingAccount) {
+    const b = options.budget;
+    const topicName = b.topic ?? (b.killSwitch ? 'gcp-seeder-budget' : undefined);
+    const pubsubTopic = topicName ? await ensureTopic(auth, projectId, topicName, log) : undefined;
+    const spec = {
+      billingAccount: options.billingAccount,
+      projectNumber,
+      projectId,
+      amountUsd: b.amountUsd,
+      thresholds: b.thresholds,
+      pubsubTopic,
+    };
+    const created = await ensureBudget(auth, spec, log);
+    result.budget = { ...created };
+    if (b.killSwitch && pubsubTopic) {
+      result.budget.killSwitchDir = await writeKillSwitchTemplate(outputDir, { ...spec, topic: pubsubTopic });
+      log(`✓ Kill-switch template written to ${result.budget.killSwitchDir} (not deployed — see its README)`);
     }
   }
 

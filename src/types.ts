@@ -165,6 +165,20 @@ export interface SeedOptions {
    */
   harden?: boolean;
   /**
+   * Create a billing budget for this project (requires `billingAccount`),
+   * optionally with a Pub/Sub topic and a written (not deployed) kill-switch
+   * Cloud Function template that unlinks billing when spend reaches the amount.
+   */
+  budget?: {
+    amountUsd: number;
+    /** Alert thresholds as fractions. Default [0.5, 0.9, 1.0]. */
+    thresholds?: number[];
+    /** Pub/Sub topic name (short) to create/reuse for notifications. */
+    topic?: string;
+    /** Write the kill-switch Cloud Function template to `outputDir/billing-killswitch/`. Implies a topic. */
+    killSwitch?: boolean;
+  };
+  /**
    * Reconcile mode (used by manifest apply): treat an already-existing project
    * or service account as success and continue, rather than failing. Existing
    * service accounts are reused without minting a new key. Default false, which
@@ -289,6 +303,14 @@ export interface DestroyOptions {
   apply?: boolean;
   /** Allow targeting projects that don't match an orphan pattern. Default false. */
   force?: boolean;
+  /** Remove any liens found on a project before deleting it. Default false (liened projects are skipped). */
+  removeLiens?: boolean;
+  /**
+   * Empty mode: revoke keys + WIF pools, delete user service accounts, delete
+   * the seeder budget, disable non-bootstrap APIs — but KEEP the project (and
+   * its id). Mutually exclusive with `keysOnly`.
+   */
+  empty?: boolean;
   /** Orphan patterns used for the safety check. Default: ["gyb-project-*", "seed-*"]. */
   flagPatterns?: string[];
   auth?: AuthClient;
@@ -331,6 +353,8 @@ export interface SweepOptions {
   flagPatterns?: string[];
   /** Reference "now" for expiry/age math. Injectable for tests; defaults to the wall clock. */
   now?: Date;
+  /** Remove liens before deleting (passed through to destroy). Default false. */
+  removeLiens?: boolean;
   auth?: AuthClient;
   logger?: (message: string) => void;
 }
@@ -447,6 +471,15 @@ export interface SeedResult {
   billingAccount?: string;
   /** Per-API readiness probe outcome (only when `wait` was not disabled). */
   readiness?: Array<{ api: string; status: 'ready' | 'timeout' | 'skipped' }>;
+  /** Budget created/reused, if `budget` was set. */
+  budget?: {
+    name: string;
+    displayName: string;
+    existed: boolean;
+    pubsubTopic?: string;
+    /** Directory the kill-switch template was written to, if requested. */
+    killSwitchDir?: string;
+  };
   /** What `harden` removed, if requested. */
   hardening?: {
     defaultNetworkDeleted: boolean;

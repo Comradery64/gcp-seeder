@@ -15,6 +15,8 @@ import { explainGoogleError, formatExplainedError } from './errors.js';
 import { resolveBillingAccount } from './billing.js';
 import { PRESET_ROLES, validateRoles } from './roles.js';
 import { resolveAuth } from './auth.js';
+import { preflight } from './preflight.js';
+import type { PreflightReport } from './preflight.js';
 import { loadManifest, manifestToSeedOptions } from './manifest.js';
 import { VERSION } from './version.js';
 import type { AuditReport, CredentialTargets, DestroyResult, SeedResult, ServiceAccountSpec, SweepResult } from './types.js';
@@ -46,6 +48,10 @@ program
   .option('--roles <csv>', 'Project IAM roles to grant the created service account(s) (preset default if omitted)')
   .option('--no-wait', 'Do not wait for enabled APIs to become usable')
   .option('--harden', 'Delete the default network and demote the default compute SA')
+  .option('--budget <usd>', 'Create a budget with 50/90/100% alerts on the linked billing account', (v) => parseFloat(v))
+  .option('--budget-topic <name>', 'Pub/Sub topic to create/reuse for budget notifications')
+  .option('--kill-switch', 'Write (not deploy) a Cloud Function that unlinks billing when the budget is exhausted; implies a topic')
+  .option('--skip-preflight', 'Skip the read-only preflight checks before creating anything')
   .option('--oauth-client', 'Create an OAuth client + consent screen')
   .option('--support-email <email>', 'Consent-screen support email (for --oauth-client)')
   .option('--output-dir <dir>', 'Where to write credentials', './credentials')
@@ -54,6 +60,38 @@ program
   .option('--json', 'Emit the SeedResult as JSON (implies --yes; suppresses progress output)')
   .option('-y, --yes', 'Skip prompts; use flags/defaults non-interactively')
   .action(run);
+
+program
+  .command('preflight')
+  .description('Read-only: check quota, billing, parent permission, org policies and id availability before seeding.')
+  .option('-p, --project-id <id>', 'Project id you intend to create')
+  .option('--parent <resource>', 'organizations/123 or folders/456')
+  .option('--billing-account <id>', 'Billing account you intend to link')
+  .option('--apis <list>', 'Comma-separated APIs you intend to enable')
+  .option('--preset <name>', `Preset whose APIs you intend to enable: ${ALL_PRESETS.join(', ')}`)
+  .option('--service-account', 'Plan includes a downloadable SA key (checks the key-creation org policy)')
+  .option('--json', 'Emit the PreflightReport as JSON')
+  .action(async (opts: { projectId?: string; parent?: string; billingAccount?: string; apis?: string; preset?: string; serviceAccount?: boolean; json?: boolean }) => {
+    const apis = opts.apis
+      ? opts.apis.split(',').map((s) => s.trim()).filter(Boolean)
+      : opts.preset
+        ? (PRESETS[opts.preset] ?? PROVISIONING_PRESETS[opts.preset]?.apis ?? [])
+        : [];
+    const report = await preflight({
+      projectId: opts.projectId,
+      parent: opts.parent,
+      billingAccount: opts.billingAccount,
+      apis,
+      wantsServiceAccountKey: Boolean(opts.serviceAccount) || Boolean(PROVISIONING_PRESETS[opts.preset ?? '']),
+      logger: opts.json ? undefined : log,
+    });
+    if (opts.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      printPreflightReport(report);
+    }
+    if (!report.ok) process.exitCode = 2;
+  });
 
 program
   .command('audit')
@@ -83,16 +121,20 @@ program
   .description('Tear down explicitly-named projects (revoke static keys + soft-delete). Dry-run by default.')
   .requiredOption('--project <id...>', 'Project id(s) to tear down (required, explicit — no wildcards)')
   .option('--keys-only', 'Revoke standing credentials (static SA keys + WIF pools); keep the project + service accounts')
+  .option('--empty', 'Remove the seeder-managed surface (keys, WIF pools, service accounts, budget, non-bootstrap APIs) but keep the project and its id')
+  .option('--remove-liens', 'Remove liens before deleting (otherwise a liened project is skipped)')
   .option('--apply', 'Actually delete (default is a dry-run)')
   .option('--force', "Allow projects that don't match an orphan pattern (gyb-project-*/seed-*)")
   .option('--json', 'Emit the DestroyResult as JSON (implies --yes; suppresses progress output)')
   .option('-y, --yes', 'Skip the interactive confirmation (for scripts)')
-  .action(async (opts: { project: string[]; keysOnly?: boolean; apply?: boolean; force?: boolean; json?: boolean; yes?: boolean }) => {
+  .action(async (opts: { project: string[]; keysOnly?: boolean; empty?: boolean; removeLiens?: boolean; apply?: boolean; force?: boolean; json?: boolean; yes?: boolean }) => {
     const json = Boolean(opts.json);
     // Show the plan first (always a dry-run pass), so the user sees exactly what's targeted.
     const plan = await destroyProjects({
       projectIds: opts.project,
       keysOnly: opts.keysOnly,
+      empty: opts.empty,
+      removeLiens: opts.removeLiens,
       force: opts.force,
       apply: false,
       logger: json ? undefined : log,
@@ -118,7 +160,7 @@ program
       const ok = await confirm({
         message: `This will PERMANENTLY revoke ${keyCount} key(s)` +
           `${poolCount ? ` and ${poolCount} WIF pool(s)` : ''}` +
-          `${opts.keysOnly ? '' : ` and soft-delete ${actionable.length} project(s)`}. Proceed?`,
+          `${opts.empty ? ` and EMPTY ${actionable.length} project(s) (SAs, budget, APIs; project kept)` : opts.keysOnly ? '' : ` and soft-delete ${actionable.length} project(s)`}. Proceed?`,
         default: false,
       });
       if (!ok) {
@@ -130,6 +172,8 @@ program
     const result = await destroyProjects({
       projectIds: opts.project,
       keysOnly: opts.keysOnly,
+      empty: opts.empty,
+      removeLiens: opts.removeLiens,
       force: opts.force,
       apply: true,
       logger: json ? undefined : log,
@@ -147,15 +191,17 @@ program
   .description('Find seeder-owned projects and delete the expired/stale ones. Dry-run by default.')
   .option('--max-age <duration>', 'Also sweep projects older than this even without an expiry (e.g. 30d, 2w)')
   .option('--flag <pattern...>', 'Glob fallbacks to claim pre-label projects (default: gyb-project-*, seed-*)')
+  .option('--remove-liens', 'Remove liens before deleting (otherwise a liened project is skipped)')
   .option('--apply', 'Actually delete (default is a dry-run)')
   .option('--json', 'Emit the SweepResult as JSON (implies --yes; suppresses progress output)')
   .option('-y, --yes', 'Skip the interactive confirmation (for scripts)')
-  .action(async (opts: { maxAge?: string; flag?: string[]; apply?: boolean; json?: boolean; yes?: boolean }) => {
+  .action(async (opts: { maxAge?: string; flag?: string[]; removeLiens?: boolean; apply?: boolean; json?: boolean; yes?: boolean }) => {
     const json = Boolean(opts.json);
     // Always show the plan first (dry-run pass), so the user sees what's targeted.
     const plan = await sweepProjects({
       maxAge: opts.maxAge,
       flagPatterns: opts.flag,
+      removeLiens: opts.removeLiens,
       apply: false,
       logger: json ? undefined : log,
     });
@@ -184,7 +230,7 @@ program
       }
     }
 
-    const result = await sweepProjects({ maxAge: opts.maxAge, flagPatterns: opts.flag, apply: true, logger: json ? undefined : log });
+    const result = await sweepProjects({ maxAge: opts.maxAge, flagPatterns: opts.flag, removeLiens: opts.removeLiens, apply: true, logger: json ? undefined : log });
     if (json) {
       console.log(JSON.stringify(result, null, 2));
     } else {
@@ -322,6 +368,10 @@ interface CliOptions {
   roles?: string;
   wait?: boolean;
   harden?: boolean;
+  budget?: number;
+  budgetTopic?: string;
+  killSwitch?: boolean;
+  skipPreflight?: boolean;
   oauthClient?: boolean;
   supportEmail?: string;
   outputDir: string;
@@ -413,6 +463,26 @@ async function run(opts: CliOptions): Promise<void> {
       ? PRESET_ROLES[opts.preset]
       : undefined;
   const billingAccount = await resolveBillingForCli(opts.billingAccount, apis, interactive, json);
+  if (opts.budget !== undefined && !(opts.budget > 0)) throw new Error('--budget must be a positive number of USD.');
+  if (opts.budget !== undefined && !billingAccount) throw new Error('--budget needs a linked billing account (pass --billing-account).');
+  const budget = opts.budget !== undefined ? { amountUsd: opts.budget, topic: opts.budgetTopic, killSwitch: opts.killSwitch } : undefined;
+
+  // Preflight: catch quota / billing / org-policy / burned-id problems before
+  // anything exists. A `fail` stops the run; warn/skip are printed and continue.
+  if (!opts.skipPreflight) {
+    const report = await preflight({
+      projectId,
+      parent: opts.parent,
+      billingAccount,
+      apis,
+      wantsServiceAccountKey: credentials.serviceAccount || serviceAccounts.length > 0,
+      logger: json ? undefined : undefined,
+    });
+    if (!json) printPreflightReport(report);
+    if (!report.ok) {
+      throw new Error('Preflight found blocking problems (see above). Fix them, or pass --skip-preflight to proceed anyway.');
+    }
+  }
 
   let supportEmail = opts.supportEmail;
   if (credentials.oauthClient && !supportEmail && interactive) {
@@ -438,6 +508,7 @@ async function run(opts: CliOptions): Promise<void> {
     console.log(`  keyless (wif) ${wif ? `yes (${wif.provider}:${wif.repo})` : 'no'}`);
     console.log(`  oauth client  ${credentials.oauthClient ? 'yes' : 'no'}`);
     console.log(`  harden        ${opts.harden ? 'yes (delete default network, demote default compute SA)' : 'no'}`);
+    if (budget) console.log(`  budget        $${budget.amountUsd}${budget.killSwitch ? ' + kill-switch template' : ''}`);
     console.log(`  ttl           ${opts.ttl ?? 'none (no expiry)'}`);
     console.log(`  output dir    ${opts.outputDir}\n`);
   }
@@ -459,6 +530,7 @@ async function run(opts: CliOptions): Promise<void> {
     roles: roles?.length ? roles : undefined,
     wait: opts.wait,
     harden: opts.harden,
+    budget,
     ttl: opts.ttl,
     supportEmail,
     outputDir: opts.outputDir,
@@ -568,6 +640,16 @@ async function resolveBillingForCli(
     );
   }
   return undefined;
+}
+
+function printPreflightReport(r: PreflightReport): void {
+  const icon = { pass: '✓', warn: '⚠', fail: '✗', skip: '·' } as const;
+  console.log('\nPreflight:');
+  for (const c of r.checks) {
+    console.log(`  ${icon[c.status]} ${c.id.padEnd(15)} ${c.detail}`);
+    if (c.fix && c.status !== 'pass') console.log(`    ${' '.repeat(15)} → ${c.fix}`);
+  }
+  console.log(r.ok ? '  All blocking checks passed.' : '  Blocking problems found.');
 }
 
 function printHardening(result: SeedResult): void {
@@ -732,7 +814,8 @@ function printSweepResult(r: SweepResult): void {
 function printDestroyResult(r: DestroyResult): void {
   const did = r.dryRun ? 'would' : 'did';
   const dwd = new Set<string>();
-  console.log(`\n${r.dryRun ? 'Plan' : 'Result'}${r.keysOnly ? ' (keys only)' : ''}:`);
+  const empty = (r as { empty?: boolean }).empty === true;
+  console.log(`\n${r.dryRun ? 'Plan' : 'Result'}${r.keysOnly ? ' (keys only)' : empty ? ' (empty — project kept)' : ''}:`);
   for (const p of r.projects) {
     if (p.skipped) {
       console.log(`  • ${p.projectId} — SKIPPED: ${p.skipped}`);
@@ -745,7 +828,12 @@ function printDestroyResult(r: DestroyResult): void {
       for (const k of p.keysDeleted) console.log(`      ${did} revoke key ${k}`);
     }
     for (const pool of p.wifPoolsDeleted) console.log(`      ${did} delete WIF pool ${pool}`);
-    if (!r.keysOnly) console.log(`      ${did} soft-delete the project`);
+    const ext = p as typeof p & { liens?: Array<{ name: string; reason?: string }>; liensRemoved?: string[]; serviceAccountsDeleted?: string[]; budgetDeleted?: boolean; apisDisabled?: string[] };
+    for (const l of ext.liens ?? []) console.log(`      lien ${l.name}${l.reason ? ` — ${l.reason}` : ''}${ext.liensRemoved?.includes(l.name) ? ` (${did} remove)` : ''}`);
+    for (const sa of ext.serviceAccountsDeleted ?? []) console.log(`      ${did} delete service account ${sa}`);
+    if (ext.budgetDeleted) console.log(`      ${did} delete the gcp-seeder budget`);
+    if (ext.apisDisabled?.length) console.log(`      ${did} disable ${ext.apisDisabled.length} API(s): ${ext.apisDisabled.join(', ')}`);
+    if (!r.keysOnly && !empty) console.log(`      ${did} soft-delete the project`);
     p.dwdClientIds.forEach((c) => dwd.add(c));
   }
   if (dwd.size) {

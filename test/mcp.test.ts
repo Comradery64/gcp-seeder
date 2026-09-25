@@ -30,12 +30,13 @@ const parse = (name: string, input: Record<string, unknown>) => z.object(tool(na
 test('exposes exactly the expected tool set', () => {
   assert.deepEqual(
     MCP_TOOLS.map((t) => t.name).sort(),
-    ['gcp_seeder_audit', 'gcp_seeder_destroy', 'gcp_seeder_rotate', 'gcp_seeder_seed', 'gcp_seeder_sweep'],
+    ['gcp_seeder_audit', 'gcp_seeder_destroy', 'gcp_seeder_preflight', 'gcp_seeder_rotate', 'gcp_seeder_seed', 'gcp_seeder_sweep'],
   );
 });
 
 test('audit is read-only; the mutating tools are marked destructive', () => {
   assert.equal(tool('gcp_seeder_audit').annotations?.readOnlyHint, true);
+  assert.equal(tool('gcp_seeder_preflight').annotations?.readOnlyHint, true);
   for (const n of ['gcp_seeder_sweep', 'gcp_seeder_destroy', 'gcp_seeder_rotate']) {
     assert.equal(tool(n).annotations?.destructiveHint, true, `${n} must be flagged destructive`);
   }
