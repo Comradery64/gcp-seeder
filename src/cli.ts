@@ -462,8 +462,11 @@ async function run(opts: CliOptions): Promise<void> {
     : opts.preset
       ? PRESET_ROLES[opts.preset]
       : undefined;
+  // Validate cheap, local inputs BEFORE anything that touches the network.
+  if (opts.budget !== undefined && !(Number.isFinite(opts.budget) && opts.budget > 0)) {
+    throw new Error('--budget must be a positive number of USD.');
+  }
   const billingAccount = await resolveBillingForCli(opts.billingAccount, apis, interactive, json);
-  if (opts.budget !== undefined && !(opts.budget > 0)) throw new Error('--budget must be a positive number of USD.');
   if (opts.budget !== undefined && !billingAccount) throw new Error('--budget needs a linked billing account (pass --billing-account).');
   const budget = opts.budget !== undefined ? { amountUsd: opts.budget, topic: opts.budgetTopic, killSwitch: opts.killSwitch } : undefined;
 

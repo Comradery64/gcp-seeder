@@ -69,18 +69,16 @@ npx gcp-seeder preflight --json   # machine-readable
 Example output:
 
 ```
-Preflight report
-────────────────
-✔ pass   auth            Authenticated as you@example.com.
-✔ pass   project-id      "my-app" is not among your projects — nothing conflicts.
-✔ pass   quota           4 project(s) counted toward quota (heuristic).
-✔ pass   parent          Can create projects under folders/123456789.
-✘ fail   billing         No linkable billing account was found. These requested APIs need billing: run.googleapis.com.
-                          fix: Pass --billing-account <id>, or link/create one at https://console.cloud.google.com/billing
-⚠ warn   org-policy      gcp.restrictServiceUsage has a policy set — verify it allows: run.googleapis.com.
-–  skip  bootstrap-apis  No quota project attached to these credentials.
-
-1 check failed — see above before running `seed`.
+Preflight:
+  ✓ auth            Authenticated as you@example.com.
+  ✓ project-id      "my-app" is not among your projects — nothing conflicts.
+  ✓ quota           4 project(s) counted toward quota (heuristic).
+  ✓ parent          Can create projects under folders/123456789.
+  ✗ billing         No linkable billing account was found. These requested APIs need billing: run.googleapis.com.
+                    → Pass --billing-account <id>, or link/create one at https://console.cloud.google.com/billing
+  ⚠ org-policy      gcp.restrictServiceUsage has a policy set — verify it allows: run.googleapis.com.
+  · bootstrap-apis  No quota project attached to these credentials.
+  Blocking problems found.
 ```
 
 Every check is independent: if your credentials lack permission for one of
@@ -627,7 +625,7 @@ npx gcp-seeder --manifest gcp-seeder.yaml --json   # machine-readable result
 
 ### Export to Terraform — `export`
 
-Once a project exists, graduate it into your IaC: `export` reads it and prints Terraform HCL for the gcp-seeder-managed surface (project — including its linked `billing_account` if one is set — enabled APIs, user service accounts, WIF pools/providers). **Read-only, emits no secrets.** This is a starting point for managing the project in Terraform — the tool deliberately stops at bootstrap + export rather than becoming an IaC engine. IAM role bindings (from `--roles`) and budgets are not exported — bring those into Terraform by hand.
+Once a project exists, graduate it into your IaC: `export` reads it and prints Terraform HCL for the gcp-seeder-managed surface (project — including its linked `billing_account` if one is set — enabled APIs, user service accounts, WIF pools/providers). **Read-only, emits no secrets.** This is a starting point for managing the project in Terraform — the tool deliberately stops at bootstrap + export rather than becoming an IaC engine. Project role bindings held by those service accounts (what `--roles` granted) are exported as `google_project_iam_member`; budgets are not — bring those into Terraform by hand.
 
 ```bash
 npx gcp-seeder export --project my-app --terraform            # HCL to stdout

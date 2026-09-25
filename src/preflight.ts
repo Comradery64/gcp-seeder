@@ -338,11 +338,16 @@ export async function preflight(options: PreflightOptions = {}): Promise<Preflig
   try {
     auth = await resolveAuth(options.auth);
   } catch (err) {
+    // No credentials means nothing could be checked — that is a blocking
+    // failure, not a pass (a CI/agent consumer must not read `ok: true` here).
     const detail = `Could not resolve credentials: ${errMsg(err)}`;
     log(detail);
     return {
-      checks: ALL_CHECK_IDS.map((id) => ({ id, status: 'skip', detail })),
-      ok: true,
+      checks: [
+        { id: 'auth', status: 'fail', detail, fix: 'Run `gcp-seeder init` (or `gcloud auth application-default login`) and retry.' },
+        ...ALL_CHECK_IDS.filter((id) => id !== 'auth').map((id) => ({ id, status: 'skip' as const, detail: 'Skipped: no credentials.' })),
+      ],
+      ok: false,
     };
   }
 

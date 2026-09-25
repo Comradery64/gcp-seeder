@@ -427,7 +427,7 @@ export interface ExportResult {
   projectId: string;
   /** The rendered Terraform HCL. */
   hcl: string;
-  counts: { services: number; serviceAccounts: number; wifPools: number };
+  counts: { services: number; serviceAccounts: number; iamMembers: number; wifPools: number };
 }
 
 /**

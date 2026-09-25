@@ -68,8 +68,9 @@ async function listUserServiceAccounts(auth: AuthClient, projectId: string): Pro
  * service accounts, and any Workload Identity Federation pools/providers.
  *
  * Strictly read-only — this is the "graduation path" off the imperative tool,
- * not an IaC engine. It does not emit secrets (no keys), IAM bindings, or
- * default/Google-managed service accounts.
+ * not an IaC engine. It does not emit secrets (no keys) or default/Google-managed
+ * service accounts. Unconditional project role bindings held by the exported
+ * SAs are emitted as google_project_iam_member (what `seed --roles` granted).
  */
 export async function exportProjectTerraform(options: ExportOptions): Promise<ExportResult> {
   const log = options.logger ?? (() => {});
@@ -79,7 +80,7 @@ export async function exportProjectTerraform(options: ExportOptions): Promise<Ex
   log(`Reading ${projectId}…`);
   const crm = google.cloudresourcemanager({ version: 'v3', auth: auth as never });
   const { data: project } = await crm.projects.get({ name: `projects/${projectId}` });
-  const [services, serviceAccounts, wifPools, billingAccount] = await Promise.all([
+  const [services, serviceAccounts, wifPools, billingAccount, iamBindings] = await Promise.all([
     listEnabledServices(auth, projectId),
     listUserServiceAccounts(auth, projectId),
     listWifPools(auth, projectId).catch(() => []),
@@ -89,6 +90,15 @@ export async function exportProjectTerraform(options: ExportOptions): Promise<Ex
       if ((err as { code?: number }).code === 403) return undefined;
       throw err;
     }),
+    // Unconditional project role bindings, so SA roles granted by --roles can
+    // be exported as google_project_iam_member. A 403 → no bindings exported.
+    crm.projects
+      .getIamPolicy({ resource: `projects/${projectId}`, requestBody: { options: { requestedPolicyVersion: 3 } } })
+      .then(({ data }) => (data.bindings ?? []).filter((b) => !b.condition).map((b) => ({ role: b.role ?? '', members: b.members ?? [] })))
+      .catch((err) => {
+        if ((err as { code?: number }).code === 403) return [];
+        throw err;
+      }),
   ]);
 
   const pName = tfName(projectId);
@@ -156,6 +166,25 @@ export async function exportProjectTerraform(options: ExportOptions): Promise<Ex
     );
   }
 
+  // Project roles held by the exported SAs (what `seed --roles` granted).
+  let iamMembers = 0;
+  for (const sa of serviceAccounts) {
+    const member = `serviceAccount:${sa.email}`;
+    const accountRes = tfName(sa.email.split('@')[0] ?? sa.email);
+    for (const b of iamBindings.filter((b) => b.members.includes(member) && b.role).sort((a, c) => a.role.localeCompare(c.role))) {
+      iamMembers++;
+      blocks.push(
+        [
+          `resource "google_project_iam_member" ${q(tfName(`${accountRes}_${b.role.replace(/^roles\//, '')}`))} {`,
+          `  project = google_project.${pName}.project_id`,
+          `  role    = ${q(b.role)}`,
+          `  member  = "serviceAccount:\${google_service_account.${accountRes}.email}"`,
+          '}',
+        ].join('\n'),
+      );
+    }
+  }
+
   for (const pool of wifPools) {
     const poolRes = tfName(`pool_${pool.poolId}`);
     blocks.push(
@@ -184,10 +213,10 @@ export async function exportProjectTerraform(options: ExportOptions): Promise<Ex
   }
 
   const hcl = blocks.join('\n\n') + '\n';
-  log(`✓ Rendered ${services.length} API(s), ${serviceAccounts.length} service account(s), ${wifPools.length} WIF pool(s).`);
+  log(`✓ Rendered ${services.length} API(s), ${serviceAccounts.length} service account(s), ${iamMembers} role binding(s), ${wifPools.length} WIF pool(s).`);
   return {
     projectId,
     hcl,
-    counts: { services: services.length, serviceAccounts: serviceAccounts.length, wifPools: wifPools.length },
+    counts: { services: services.length, serviceAccounts: serviceAccounts.length, iamMembers, wifPools: wifPools.length },
   };
 }

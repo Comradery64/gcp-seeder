@@ -114,12 +114,16 @@ test('auth check skips (not throws) when the principal cannot be determined', as
   assert.equal(r.ok, true);
 });
 
-test('preflight() never throws when resolveAuth itself fails; every check is skip', async () => {
+test('preflight() never throws when resolveAuth itself fails; auth is a FAIL and the rest are skip', async () => {
   // No auth injected and ADC is blocked by test/setup.ts, so resolveAuth rejects.
+  // "Nothing could be checked" must not read as ok:true to a CI/agent consumer.
   const r = await preflight({});
   assert.equal(r.checks.length, 7);
-  assert.ok(r.checks.every((c) => c.status === 'skip'));
-  assert.equal(r.ok, true);
+  const auth = r.checks.find((c) => c.id === 'auth')!;
+  assert.equal(auth.status, 'fail');
+  assert.match(auth.fix ?? '', /gcp-seeder init/);
+  assert.ok(r.checks.filter((c) => c.id !== 'auth').every((c) => c.status === 'skip'));
+  assert.equal(r.ok, false);
 });
 
 test('project-id: fail on invalid shape (rejected by regex before any project-id-specific search)', async () => {
