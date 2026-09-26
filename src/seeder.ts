@@ -237,6 +237,7 @@ async function createOAuthClient(
   title: string,
   supportEmail: string,
   outputDir: string,
+  parent: string | undefined,
   log: (m: string) => void,
 ): Promise<{ clientSecretsFile: string }> {
   const iap = google.iap({ version: 'v1', auth: auth as never });
@@ -254,9 +255,17 @@ async function createOAuthClient(
   const brands = await iap.projects.brands.list({ parent: `projects/${projectId}` });
   const brand = brands.data.brands?.[0];
   if (!brand?.name) {
+    // An "Internal" consent screen requires the *project* to sit inside a
+    // Cloud organization — the caller's account type alone doesn't decide it.
     throw new Error(
-      'No OAuth consent screen (brand) is available for this project. ' +
-        'Personal Google accounts must configure the consent screen manually in the console.',
+      parent
+        ? 'No OAuth consent screen (brand) is available for this project. ' +
+            'Personal Google accounts must configure the consent screen manually in the console.'
+        : 'No OAuth consent screen (brand) is available for this project. ' +
+            "It isn't attached to a Cloud organization, so an Internal consent screen isn't available. " +
+            'Re-run with --parent organizations/<id> (see `gcloud organizations list`), or move this ' +
+            'project into your org (`gcloud projects move <id> --organization <org-id>`) and finish manually. ' +
+            'Personal Google accounts (no org) must configure the consent screen manually in the console.',
     );
   }
 
@@ -439,6 +448,7 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
         options.consentScreenTitle ?? displayName,
         options.supportEmail!,
         outputDir,
+        options.parent,
         log,
       );
     } catch (err) {

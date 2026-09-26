@@ -172,3 +172,43 @@ test('org policy blocking SA key creation warns instead of throwing', async () =
   // And a clear, actionable warning names the org policy.
   assert.ok(res.warnings.some((w) => /disableServiceAccountKeyCreation/.test(w)), 'expected org-policy warning');
 });
+
+for (const [parent, expected, absent] of [
+  [undefined, /isn't attached to a Cloud organization/, /^$/],
+  ['organizations/123456789', /Personal Google accounts must configure/, /isn't attached/],
+] as const) {
+  test(`no-brand OAuth warning names the real cause (parent=${parent ?? 'none'})`, async () => {
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const create = mock.fn(async () => ({ data: { name: 'operations/op1' } }));
+    const crmGet = mock.fn(async () => ({ data: { done: true, response: { name: 'projects/424242' } } }));
+    mock.method(google, 'cloudresourcemanager', () => ({ projects: { create }, operations: { get: crmGet } }) as never);
+    mock.method(google, 'serviceusage', () => ({ services: { batchEnable: async () => ({ data: { done: true } }) }, operations: { get: async () => ({ data: { done: true } }) } }) as never);
+    mock.method(google, 'iap', () => ({
+      projects: {
+        brands: {
+          create: async () => { throw new Error('rejected'); },
+          list: async () => ({ data: { brands: [] } }),
+        },
+      },
+    }) as never);
+
+    const promise = seedProject({
+      projectId: 'seed-unit-oauth',
+      parent,
+      apis: [],
+      credentials: { serviceAccount: false, oauthClient: true },
+      supportEmail: 'admin@example.com',
+      auth: {} as never,
+      logger: () => {},
+    });
+    for (let i = 0; i < 60; i++) {
+      mock.timers.runAll();
+      await Promise.resolve();
+    }
+    const res = await promise;
+    assert.equal(res.oauthClient, undefined);
+    const w = res.warnings.find((x) => /Could not create OAuth client/.test(x)) ?? '';
+    assert.match(w, expected);
+    if (parent) assert.doesNotMatch(w, absent);
+  });
+}

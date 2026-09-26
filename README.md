@@ -270,7 +270,7 @@ All credential files are written with `0600` permissions, and the included `.git
 
 Google has **no official public API for creating arbitrary OAuth clients.** Like GYB, this tool repurposes the **IAP brands API** as a workaround. In practice:
 
-- ✅ **Works** for **Google Workspace ("Internal") org** projects.
+- ✅ **Works** for **Google Workspace ("Internal") org** projects — the *project* must be inside the org, so pass `--parent organizations/<id>` (a Workspace login alone isn't enough; a parent-less project can't get an Internal consent screen).
 - ❌ **Usually fails** for **personal gmail.com** accounts — Google rejects programmatic consent-screen creation.
 
 When it fails, `seedProject` does **not** throw; it records a warning and gives you a direct console link to finish the consent screen by hand. Service-account keys have no such limitation and work everywhere.
