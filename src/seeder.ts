@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { google } from 'googleapis';
 import type { AuthClient } from 'google-auth-library';
@@ -7,7 +7,7 @@ import { BOOTSTRAP_APIS } from './apis.js';
 import { resolveAuth } from './auth.js';
 import { buildSeedLabels } from './labels.js';
 import { setupGithubWif, WIF_APIS } from './wif.js';
-import type { SeedOptions, SeedResult, ServiceAccountSpec, WifResult } from './types.js';
+import type { OAuthClientOptions, OAuthClientResult, SeedOptions, SeedResult, ServiceAccountSpec, WifResult } from './types.js';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const dedupe = (xs: string[]) => [...new Set(xs)];
@@ -263,8 +263,9 @@ async function createOAuthClient(
             'Personal Google accounts must configure the consent screen manually in the console.'
         : 'No OAuth consent screen (brand) is available for this project. ' +
             "It isn't attached to a Cloud organization, so an Internal consent screen isn't available. " +
-            'Re-run with --parent organizations/<id> (see `gcloud organizations list`), or move this ' +
-            'project into your org (`gcloud projects move <id> --organization <org-id>`) and finish manually. ' +
+            'Move it into your org (`gcloud projects move <id> --organization <org-id>`; find the id with ' +
+            '`gcloud organizations list`), then retry with `gcp-seeder oauth-client --project <id>` — or seed ' +
+            'with --parent organizations/<id> next time. ' +
             'Personal Google accounts (no org) must configure the consent screen manually in the console.',
     );
   }
@@ -460,4 +461,41 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
   }
 
   return result;
+}
+
+/**
+ * Create an OAuth client on an already-existing project — the retry path for
+ * when `seedProject`'s OAuth step failed (e.g. the project wasn't in an org
+ * yet). Reads the project's actual parent rather than trusting a flag, makes
+ * sure the IAP API is on, then runs the same brand + client creation.
+ *
+ * Unlike `seedProject`, a failure here throws: this command's only job is the
+ * OAuth client. It also refuses to overwrite an existing client_secret.json.
+ * Each successful run creates a new client; old ones are left in place.
+ */
+export async function createProjectOAuthClient(options: OAuthClientOptions): Promise<OAuthClientResult> {
+  const log = options.logger ?? (() => {});
+  const auth = await resolveAuth(options.auth);
+  const { projectId, supportEmail } = options;
+  const outputDir = options.outputDir ?? path.join(process.cwd(), 'credentials');
+
+  const target = path.join(outputDir, 'client_secret.json');
+  if (await access(target).then(() => true, () => false)) {
+    throw new Error(`${target} already exists — refusing to overwrite it. Pass a different output directory.`);
+  }
+
+  const crm = google.cloudresourcemanager({ version: 'v3', auth: auth as never });
+  const { data: project } = await crm.projects.get({ name: `projects/${projectId}` });
+  const parent = project.parent || undefined;
+  const title = options.consentScreenTitle ?? project.displayName ?? projectId;
+
+  await enableApis(auth, projectId, ['iap.googleapis.com'], log);
+  try {
+    const { clientSecretsFile } = await createOAuthClient(auth, projectId, title, supportEmail, outputDir, parent, log);
+    return { projectId, parent, clientSecretsFile };
+  } catch (err) {
+    throw new Error(
+      `${(err as Error).message} Finish it manually at https://console.cloud.google.com/apis/credentials?project=${projectId}`,
+    );
+  }
 }

@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { google } from 'googleapis';
-import { seedProject, generateProjectId } from '../src/seeder.js';
+import { seedProject, generateProjectId, createProjectOAuthClient } from '../src/seeder.js';
 
 afterEach(() => {
   mock.restoreAll();
@@ -212,3 +212,67 @@ for (const [parent, expected, absent] of [
     if (parent) assert.doesNotMatch(w, absent);
   });
 }
+
+function mockOAuthApis(opts: { parent?: string; brands: { name: string }[] }) {
+  const batchEnable = mock.fn(async () => ({ data: { name: 'operations/su1' } }));
+  mock.method(google, 'cloudresourcemanager', () => ({
+    projects: { get: async () => ({ data: { displayName: 'Demo App', parent: opts.parent } }) },
+  }) as never);
+  mock.method(google, 'serviceusage', () => ({ services: { batchEnable }, operations: { get: async () => ({ data: { done: true } }) } }) as never);
+  const clientCreate = mock.fn(async () => ({ data: { name: 'projects/1/brands/1/identityAwareProxyClients/cid-123', secret: 'placeholder-secret' } }));
+  mock.method(google, 'iap', () => ({
+    projects: {
+      brands: {
+        create: async () => { throw new Error('exists'); },
+        list: async () => ({ data: { brands: opts.brands } }),
+        identityAwareProxyClients: { create: clientCreate },
+      },
+    },
+  }) as never);
+  return { batchEnable, clientCreate };
+}
+
+async function drain<T>(p: Promise<T>): Promise<T> {
+  p.catch(() => {}); // rejection is asserted by the caller; don't let it go unhandled mid-drain
+  for (let i = 0; i < 60; i++) {
+    mock.timers.runAll();
+    await new Promise((r) => setImmediate(r));
+  }
+  return p;
+}
+
+test('oauth-client: adds a client to an existing project and writes client_secret.json', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  const { batchEnable, clientCreate } = mockOAuthApis({ parent: 'organizations/123456789', brands: [{ name: 'projects/1/brands/1' }] });
+  const dir = await mkdtemp(path.join(tmpdir(), 'seeder-oauth-'));
+  try {
+    const res = await drain(createProjectOAuthClient({ projectId: 'seed-unit-oauth', supportEmail: 'admin@example.com', outputDir: dir, auth: {} as never }));
+    assert.equal(res.parent, 'organizations/123456789');
+    assert.equal(batchEnable.mock.callCount(), 1);
+    assert.equal(clientCreate.mock.callCount(), 1);
+    const file = JSON.parse(await readFile(res.clientSecretsFile, 'utf8'));
+    assert.equal(file.installed.client_id, 'cid-123');
+    assert.equal(file.installed.project_id, 'seed-unit-oauth');
+    // second run must not clobber the existing secret
+    await assert.rejects(
+      drain(createProjectOAuthClient({ projectId: 'seed-unit-oauth', supportEmail: 'admin@example.com', outputDir: dir, auth: {} as never })),
+      /already exists/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('oauth-client: parent-less project throws the missing-org message', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  mockOAuthApis({ brands: [] });
+  const dir = await mkdtemp(path.join(tmpdir(), 'seeder-oauth-'));
+  try {
+    await assert.rejects(
+      drain(createProjectOAuthClient({ projectId: 'seed-unit-oauth', supportEmail: 'admin@example.com', outputDir: dir, auth: {} as never })),
+      /isn't attached to a Cloud organization.*console\.cloud\.google\.com/s,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

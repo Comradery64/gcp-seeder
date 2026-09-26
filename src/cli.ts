@@ -6,7 +6,7 @@ import { API_CATALOG, PRESETS, PROVISIONING_PRESETS } from './apis.js';
 import { auditCloud } from './audit.js';
 import { destroyProjects } from './destroy.js';
 import { findGcloud, hasAdc, installGcloud, runAdcLogin } from './gcloud.js';
-import { generateProjectId, seedProject } from './seeder.js';
+import { createProjectOAuthClient, generateProjectId, seedProject } from './seeder.js';
 import { sweepProjects } from './sweep.js';
 import { rotateServiceAccountKey } from './rotate.js';
 import { parseWifTarget } from './wif.js';
@@ -243,6 +243,27 @@ program
       if (result.retiredKeyIds.length) console.log(`  Retired:  ${result.retiredKeyIds.join(', ')}`);
       for (const w of result.warnings) console.warn(`  ⚠ ${w}`);
     }
+  });
+
+program
+  .command('oauth-client')
+  .description('Create an OAuth client + consent screen on an existing project (retry for a failed seed --oauth-client).')
+  .requiredOption('--project <id>', 'Existing project to add the OAuth client to')
+  .requiredOption('--support-email <email>', 'Consent-screen support email')
+  .option('--title <title>', 'Consent-screen title (default: the project display name)')
+  .option('--output-dir <dir>', 'Where to write client_secret.json', './credentials')
+  .option('--json', 'Emit the result as JSON (suppresses progress output)')
+  .action(async (opts: { project: string; supportEmail: string; title?: string; outputDir: string; json?: boolean }) => {
+    const json = Boolean(opts.json);
+    const res = await createProjectOAuthClient({
+      projectId: opts.project,
+      supportEmail: opts.supportEmail,
+      consentScreenTitle: opts.title,
+      outputDir: opts.outputDir,
+      logger: json ? undefined : log,
+    });
+    if (json) console.log(JSON.stringify(res, null, 2));
+    else console.log(`\n✓ Done. OAuth client: ${res.clientSecretsFile}`);
   });
 
 program

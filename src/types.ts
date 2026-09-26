@@ -362,6 +362,26 @@ export interface RotateResult {
   warnings: string[];
 }
 
+export interface OAuthClientOptions {
+  /** Existing project to add the OAuth client to. */
+  projectId: string;
+  /** Consent-screen support email. */
+  supportEmail: string;
+  /** Consent-screen title. Defaults to the project's display name. */
+  consentScreenTitle?: string;
+  /** Directory to write client_secret.json into. Defaults to "./credentials". */
+  outputDir?: string;
+  auth?: AuthClient;
+  logger?: (message: string) => void;
+}
+
+export interface OAuthClientResult {
+  projectId: string;
+  /** The project's parent as read from Resource Manager (undefined if none). */
+  parent?: string;
+  clientSecretsFile: string;
+}
+
 export interface ExportOptions {
   /** Project to read and render as Terraform. */
   projectId: string;

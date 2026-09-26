@@ -270,10 +270,18 @@ All credential files are written with `0600` permissions, and the included `.git
 
 Google has **no official public API for creating arbitrary OAuth clients.** Like GYB, this tool repurposes the **IAP brands API** as a workaround. In practice:
 
-- ✅ **Works** for **Google Workspace ("Internal") org** projects — the *project* must be inside the org, so pass `--parent organizations/<id>` (a Workspace login alone isn't enough; a parent-less project can't get an Internal consent screen).
+- ✅ **Works** for **Google Workspace ("Internal") org** projects.
 - ❌ **Usually fails** for **personal gmail.com** accounts — Google rejects programmatic consent-screen creation.
 
 When it fails, `seedProject` does **not** throw; it records a warning and gives you a direct console link to finish the consent screen by hand. Service-account keys have no such limitation and work everywhere.
+
+To retry just the OAuth step on the project you already have (no new project, no extra quota) — e.g. after moving it into your org with `gcloud projects move <id> --organization <org-id>`:
+
+```sh
+npx gcp-seeder oauth-client --project seed-xxxx --support-email you@example.com
+```
+
+It reads the project's real parent, enables `iap.googleapis.com` if needed, and writes `client_secret.json` to `--output-dir`. It refuses to overwrite an existing `client_secret.json`, and each successful run creates a new client.
 
 ## Cleanup
 
