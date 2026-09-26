@@ -22,9 +22,13 @@ function cloudbillingApi(overrides: {
   accounts?: Array<{ name: string; displayName?: string; open?: boolean }>;
   list?: () => Promise<unknown>;
   testIamPermissions?: (params: unknown) => Promise<unknown>;
+  linkedProjects?: number;
 } = {}) {
   return {
     billingAccounts: {
+      projects: {
+        list: async () => ({ data: { projectBillingInfo: Array.from({ length: overrides.linkedProjects ?? 0 }, (_, i) => ({ projectId: `p${i}` })) } }),
+      },
       list:
         overrides.list ??
         (async () => ({ data: { billingAccounts: overrides.accounts ?? [] } })),
@@ -394,4 +398,20 @@ test('ok is false when any check fails, even if others pass', async () => {
 
   const r = await preflight({ auth: {} as never, projectId: 'not valid!!' });
   assert.equal(r.ok, false);
+});
+
+test('billing: warn when the account is at the default projects-per-billing-account cap', async () => {
+  baseMocks({
+    cloudbilling: cloudbillingApi({
+      accounts: [{ name: 'billingAccounts/0114D0-E45B05-2951AC', open: true }],
+      testIamPermissions: async () => ({ data: { permissions: ['billing.resourceAssociations.create'] } }),
+      linkedProjects: 5,
+    }),
+  });
+  const r = await preflight({ auth: {} as never, apis: ['run.googleapis.com'] });
+  const check = findCheck(r.checks, 'billing');
+  assert.equal(check.status, 'warn');
+  assert.match(check.detail, /already has 5 linked project/);
+  assert.match(check.fix ?? '', /0114D0-E45B05-2951AC\/manage/);
+  assert.equal(r.ok, true, 'a warn does not block');
 });

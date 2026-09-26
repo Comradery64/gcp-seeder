@@ -1,6 +1,7 @@
 import test, { mock, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { google } from 'googleapis';
+import { countLinkedProjects } from '../src/billing.js';
 import {
   listBillingAccounts,
   resolveBillingAccount,
@@ -202,4 +203,15 @@ test('canLinkProjects returns false when the permission is missing', async () =>
   }) as never);
   const ok = await canLinkProjects({} as never, '012345-ABCDEF-678901');
   assert.equal(ok, false);
+});
+
+test('countLinkedProjects sums projectBillingInfo across pages', async () => {
+  const pages: Record<string, unknown> = {
+    '': { projectBillingInfo: [{ projectId: 'a' }, { projectId: 'b' }], nextPageToken: 'p2' },
+    p2: { projectBillingInfo: [{ projectId: 'c' }] },
+  };
+  mock.method(google, 'cloudbilling', () => ({
+    billingAccounts: { projects: { list: async ({ pageToken = '' }: { pageToken?: string }) => ({ data: pages[pageToken] }) } },
+  }) as never);
+  assert.equal(await countLinkedProjects({} as never, '0114D0-E45B05-2951AC'), 3);
 });

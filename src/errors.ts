@@ -135,8 +135,9 @@ export function explainGoogleError(err: unknown, ctx: ExplainGoogleErrorContext 
 
   // 2. Billing account quota (projects-per-billing-account cap), checked before the
   //    generic billing-permission case since both are 4xx + mention "billing".
-  if (/precondition check failed/i.test(msg) && /billing/i.test(msg)) {
-    const acct = ctx.billingAccount ?? '<id>';
+  //    Also matches the message src/billing.ts already rewrote (it names the account).
+  if ((/precondition check failed/i.test(msg) && /billing/i.test(msg)) || /projects-per-billing-account quota/i.test(msg)) {
+    const acct = ctx.billingAccount ?? msg.match(/Billing account ([0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6})/i)?.[1] ?? '<id>';
     return {
       kind: 'billing-quota',
       headline: `Billing account ${acct} has hit its projects-per-billing-account quota (default 5).`,

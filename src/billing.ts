@@ -140,3 +140,20 @@ export async function canLinkProjects(auth: AuthClient, billingAccount: string):
   });
   return (data.permissions ?? []).includes('billing.resourceAssociations.create');
 }
+
+/**
+ * How many projects are currently linked to the billing account. Google caps
+ * this at 5 per account by default (raised on request); hitting it surfaces
+ * only at link time as an opaque "Precondition check failed". Used by preflight.
+ */
+export async function countLinkedProjects(auth: AuthClient, billingAccount: string): Promise<number> {
+  const cb = google.cloudbilling({ version: 'v1', auth: auth as never });
+  let count = 0;
+  let pageToken: string | undefined;
+  do {
+    const { data } = await cb.billingAccounts.projects.list({ name: fullName(billingAccount), pageSize: 200, pageToken });
+    count += (data.projectBillingInfo ?? []).length;
+    pageToken = data.nextPageToken ?? undefined;
+  } while (pageToken);
+  return count;
+}

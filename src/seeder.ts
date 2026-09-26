@@ -340,7 +340,18 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
   // Link billing BEFORE enabling APIs: most non-Workspace services refuse to
   // enable on an unbilled project, and API-created projects start unbilled.
   if (options.billingAccount) {
-    await linkBillingAccount(auth, projectId, options.billingAccount, log);
+    try {
+      await linkBillingAccount(auth, projectId, options.billingAccount, log);
+    } catch (err) {
+      // The project already exists at this point — say so, and how to finish or
+      // clean up, instead of leaving a silent half-provisioned project behind.
+      const e = err as Error;
+      e.message +=
+        ` Project ${projectId} was created but is unbilled and has no APIs enabled. ` +
+        `Either fix billing and re-run with a manifest (projectId: ${projectId}) to finish it, ` +
+        `or remove it with: gcp-seeder destroy --project ${projectId} --apply`;
+      throw e;
+    }
   }
 
   const apisToEnable = dedupe([

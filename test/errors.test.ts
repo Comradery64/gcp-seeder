@@ -211,3 +211,12 @@ test('formatExplainedError omits Fix/Docs lines when absent', () => {
   const rendered = formatExplainedError(explained);
   assert.equal(rendered, 'Unrecognized error.\n\nOriginal: raw message');
 });
+
+test('billing-quota: recognizes the message src/billing.ts already rewrote and extracts the account', () => {
+  const e = explainGoogleError(
+    new Error('Billing account 0114D0-E45B05-2951AC has hit its projects-per-billing-account quota (default 5). Unlink a project or request an increase.'),
+  );
+  assert.equal(e.kind, 'billing-quota');
+  assert.match(e.headline, /0114D0-E45B05-2951AC/);
+  assert.doesNotMatch(e.headline, /~30 projects/);
+});

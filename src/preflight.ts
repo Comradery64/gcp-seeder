@@ -1,7 +1,7 @@
 import { google } from 'googleapis';
 import type { AuthClient } from 'google-auth-library';
 import { resolveAuth } from './auth.js';
-import { resolveBillingAccount, canLinkProjects } from './billing.js';
+import { resolveBillingAccount, canLinkProjects, countLinkedProjects } from './billing.js';
 
 export interface PreflightCheck {
   id: string;
@@ -219,7 +219,22 @@ async function checkBilling(
         fix: 'Grant roles/billing.user ON THE BILLING ACCOUNT itself (an org-level grant is not enough when the account lives outside the org).',
       };
     }
-    return { id: 'billing', status: 'pass', detail: `Billing account ${account} is resolved and linkable.` };
+    // The per-account project cap (default 5) only fails at link time with an
+    // opaque precondition error — count ahead so the run doesn't die half-way.
+    const linked = await countLinkedProjects(auth, account).catch(() => undefined);
+    if (linked !== undefined && linked >= DEFAULT_PROJECTS_PER_BILLING_ACCOUNT) {
+      return {
+        id: 'billing',
+        status: 'warn',
+        detail: `Billing account ${account} already has ${linked} linked project(s); the default cap is ${DEFAULT_PROJECTS_PER_BILLING_ACCOUNT}, so linking may fail with "Precondition check failed" unless the quota was raised.`,
+        fix: `Unlink an unused project, pick another account, or request an increase: https://console.cloud.google.com/billing/${account.replace('billingAccounts/', '')}/manage`,
+      };
+    }
+    return {
+      id: 'billing',
+      status: 'pass',
+      detail: `Billing account ${account} is resolved and linkable${linked !== undefined ? ` (${linked} project(s) linked)` : ''}.`,
+    };
   } catch (err) {
     return { id: 'billing', status: 'skip', detail: `Could not resolve/verify billing: ${errMsg(err)}` };
   }
@@ -330,6 +345,9 @@ async function checkBootstrapApis(auth: AuthClient): Promise<PreflightCheck> {
  * for a genuinely bad call (e.g. a non-Error auth injection blowing up
  * `resolveAuth` in a way that isn't a credentials problem at all).
  */
+/** Google's default projects-per-billing-account quota. */
+export const DEFAULT_PROJECTS_PER_BILLING_ACCOUNT = 5;
+
 export async function preflight(options: PreflightOptions = {}): Promise<PreflightReport> {
   const log = options.logger ?? (() => {});
   const apis = options.apis ?? [];
