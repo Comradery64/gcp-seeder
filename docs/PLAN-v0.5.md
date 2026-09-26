@@ -396,3 +396,24 @@ npx tsx src/cli.ts destroy --project <id> --apply --yes
 
 Record what the live run shows (especially whether readiness polling removes the
 "wait 1–2 minutes" WIF caveat) in the README before release.
+
+### Live smoke results (2026-09-26, radixark.ai org, it@ credentials)
+
+- **Run 1** failed at the billing link: the chosen account was at the default
+  5-projects-per-billing-account cap. Three fixes came out of it (commit
+  `49bcf8c`): the top-level error explainer had mislabelled it as the ~30 project
+  quota; preflight now counts linked projects and warns at the cap; the seeder
+  now says the project exists and how to finish or destroy it. The half-made
+  project was removed with `destroy --apply`.
+- **Run 2** (`--preset ai --service-account --budget 5 --harden --ttl 1d`,
+  org parent, account ending BFEF3C) completed end to end. Verified
+  independently via the APIs afterwards: billing linked; 9 APIs enabled;
+  `roles/aiplatform.user` bound to the SA and nothing else added; default
+  network gone; budget present with 50/90/100 thresholds; labels with a
+  1-day expiry. Readiness needed **zero** probe retries. Key creation was
+  blocked by `iam.disableServiceAccountKeyCreation` and surfaced as a warning.
+  `audit --project` found it; `destroy --apply` soft-deleted it.
+- **Still open:** the org-policy preflight check needs a quota project on the
+  credentials (`orgpolicy.googleapis.com` refuses plain ADC), so it reports
+  `skip` on this org. WIF was not exercised live in this run, so the IAM
+  binding-propagation caveat in the README stands.
