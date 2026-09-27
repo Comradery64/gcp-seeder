@@ -674,11 +674,15 @@ Google has **no official public API for creating arbitrary OAuth clients.** Like
 
 When it fails, `seedProject` does **not** throw; it records a warning and gives you a direct console link to finish the consent screen by hand. Service-account keys have no such limitation and work everywhere.
 
-To retry just the OAuth step on the project you already have (no new project, no extra quota) — e.g. after moving it into your org with `gcloud projects move <id> --organization <org-id>`:
+To recover without re-seeding (no new project, no extra quota), move the project into your org, then retry just the OAuth step:
 
 ```sh
+npx gcp-seeder move --project seed-xxxx --organization 123456789012            # dry-run: shows from → to + permission check
+npx gcp-seeder move --project seed-xxxx --organization 123456789012 --apply    # or --folder <id>
 npx gcp-seeder oauth-client --project seed-xxxx --support-email you@example.com
 ```
+
+`move` (alias `attach-org`) is dry-run by default, checks you hold `resourcemanager.projects.move` on the project and the destination (`roles/resourcemanager.projectMover`), and is a no-op if the project is already there. A moved project inherits the destination's IAM and org policies — prefer a dedicated folder over the org root.
 
 It reads the project's real parent, enables `iap.googleapis.com` if needed, and writes `client_secret.json` to `--output-dir`. It refuses to overwrite an existing `client_secret.json`, and each successful run creates a new client.
 

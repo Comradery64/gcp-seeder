@@ -269,8 +269,8 @@ async function createOAuthClient(
             'Personal Google accounts must configure the consent screen manually in the console.'
         : 'No OAuth consent screen (brand) is available for this project. ' +
             "It isn't attached to a Cloud organization, so an Internal consent screen isn't available. " +
-            'Move it into your org (`gcloud projects move <id> --organization <org-id>`; find the id with ' +
-            '`gcloud organizations list`), then retry with `gcp-seeder oauth-client --project <id>` — or seed ' +
+            'Move it into your org (`gcp-seeder move --project <id> --organization <org-id> --apply`; find the ' +
+            'id with `gcloud organizations list`), then retry with `gcp-seeder oauth-client --project <id>` — or seed ' +
             'with --parent organizations/<id> next time. ' +
             'Personal Google accounts (no org) must configure the consent screen manually in the console.',
     );

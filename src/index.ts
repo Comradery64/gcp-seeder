@@ -8,6 +8,7 @@ export { auditCloud } from './audit.js';
 export { destroyProjects } from './destroy.js';
 export { sweepProjects } from './sweep.js';
 export { rotateServiceAccountKey } from './rotate.js';
+export { moveProject } from './move.js';
 export { buildMcpServer, runMcpServer, MCP_TOOLS } from './mcp.js';
 export { exportProjectTerraform } from './export.js';
 export { loadManifest, manifestToSeedOptions } from './manifest.js';
@@ -56,6 +57,8 @@ export type {
   RotateOptions,
   RotateResult,
   OAuthClientOptions,
+  MoveProjectOptions,
+  MoveProjectResult,
   OAuthClientResult,
   ExportOptions,
   ExportResult,

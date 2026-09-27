@@ -416,6 +416,32 @@ export interface RotateResult {
   warnings: string[];
 }
 
+export interface MoveProjectOptions {
+  /** Project to move. */
+  projectId: string;
+  /** Target parent: "organizations/<id>" or "folders/<id>". */
+  destination: string;
+  /** Actually move the project. Default false (dry-run). */
+  apply?: boolean;
+  auth?: AuthClient;
+  logger?: (message: string) => void;
+}
+
+export interface MoveProjectResult {
+  dryRun: boolean;
+  projectId: string;
+  /** Parent before the move (undefined if the project had none). */
+  from?: string;
+  to: string;
+  /** The project was already under `to`; nothing was done. */
+  alreadyThere: boolean;
+  /** The move was performed (false in dry-run). */
+  moved: boolean;
+  /** Whether the caller holds resourcemanager.projects.move; null = couldn't check. */
+  permissions?: { onProject: boolean | null; onDestination: boolean | null };
+  warnings: string[];
+}
+
 export interface OAuthClientOptions {
   /** Existing project to add the OAuth client to. */
   projectId: string;

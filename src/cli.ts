@@ -9,6 +9,7 @@ import { findGcloud, hasAdc, installGcloud, runAdcLogin } from './gcloud.js';
 import { createProjectOAuthClient, generateProjectId, seedProject } from './seeder.js';
 import { sweepProjects } from './sweep.js';
 import { rotateServiceAccountKey } from './rotate.js';
+import { moveProject } from './move.js';
 import { parseWifTarget } from './wif.js';
 import { exportProjectTerraform } from './export.js';
 import { explainGoogleError, formatExplainedError } from './errors.js';
@@ -297,6 +298,45 @@ program
       if (result.retiredKeyIds.length) console.log(`  Retired:  ${result.retiredKeyIds.join(', ')}`);
       for (const w of result.warnings) console.warn(`  ⚠ ${w}`);
     }
+  });
+
+program
+  .command('move')
+  .alias('attach-org')
+  .description('Move a project under an organization or folder (e.g. to allow an Internal OAuth consent screen). Dry-run by default.')
+  .requiredOption('--project <id>', 'Project to move')
+  .option('--organization <id>', 'Destination organization id')
+  .option('--folder <id>', 'Destination folder id')
+  .option('--apply', 'Actually move the project (default is a dry-run)')
+  .option('--json', 'Emit the result as JSON (implies --yes; suppresses progress output)')
+  .option('-y, --yes', 'Skip the interactive confirmation (for scripts)')
+  .action(async (opts: { project: string; organization?: string; folder?: string; apply?: boolean; json?: boolean; yes?: boolean }) => {
+    if (Boolean(opts.organization) === Boolean(opts.folder)) {
+      console.error('Pass exactly one of --organization <id> or --folder <id>.');
+      process.exitCode = 1;
+      return;
+    }
+    const destination = opts.organization ? `organizations/${opts.organization}` : `folders/${opts.folder}`;
+    const json = Boolean(opts.json);
+    const logger = json ? undefined : log;
+    const plan = await moveProject({ projectId: opts.project, destination, apply: false, logger });
+    if (!opts.apply || plan.alreadyThere) {
+      if (json) console.log(JSON.stringify(plan, null, 2));
+      else if (!plan.alreadyThere) console.log('\nDry-run only. Re-run with --apply to move.');
+      return;
+    }
+    if (!opts.yes && !json) {
+      const ok = await confirm({
+        message: `Move ${opts.project} from ${plan.from ?? '(no parent)'} to ${destination}? It will inherit that parent's IAM and org policies.`,
+        default: false,
+      });
+      if (!ok) {
+        console.log('Aborted.');
+        return;
+      }
+    }
+    const result = await moveProject({ projectId: opts.project, destination, apply: true, logger });
+    if (json) console.log(JSON.stringify(result, null, 2));
   });
 
 program
