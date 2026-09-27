@@ -3,7 +3,7 @@
  *
  * Library entry point. The CLI (`gcp-seeder`) is a thin wrapper over `seedProject`.
  */
-export { seedProject, generateProjectId } from './seeder.js';
+export { seedProject, generateProjectId, createProjectOAuthClient } from './seeder.js';
 export { auditCloud } from './audit.js';
 export { destroyProjects } from './destroy.js';
 export { sweepProjects } from './sweep.js';
@@ -55,6 +55,8 @@ export type {
   SweepCandidate,
   RotateOptions,
   RotateResult,
+  OAuthClientOptions,
+  OAuthClientResult,
   ExportOptions,
   ExportResult,
 } from './types.js';

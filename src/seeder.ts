@@ -1,13 +1,18 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { google } from 'googleapis';
 import type { AuthClient } from 'google-auth-library';
 import { BOOTSTRAP_APIS } from './apis.js';
 import { resolveAuth } from './auth.js';
 import { buildSeedLabels } from './labels.js';
-import { setupGithubWif, WIF_APIS } from './wif.js';
-import type { SeedOptions, SeedResult, ServiceAccountSpec, WifResult } from './types.js';
+import { setupWif, WIF_APIS } from './wif.js';
+import { linkBillingAccount } from './billing.js';
+import { grantServiceAccountRoles } from './roles.js';
+import { probeApisReady, waitForServicesEnabled, withApiReadyRetry } from './readiness.js';
+import { hardenProjectDefaults } from './harden.js';
+import { ensureBudget, ensureTopic, writeKillSwitchTemplate } from './budget.js';
+import type { OAuthClientOptions, OAuthClientResult, SeedOptions, SeedResult, ServiceAccountSpec, WifResult } from './types.js';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const dedupe = (xs: string[]) => [...new Set(xs)];
@@ -76,7 +81,7 @@ async function createProject(
   labels: Record<string, string>,
   reconcile: boolean,
   log: (m: string) => void,
-): Promise<string> {
+): Promise<{ projectNumber: string; parent: string | undefined }> {
   const crm = google.cloudresourcemanager({ version: 'v3', auth: auth as never });
   log(`Creating project "${projectId}"…`);
   let create;
@@ -90,7 +95,8 @@ async function createProject(
       const { data } = await crm.projects.get({ name: `projects/${projectId}` });
       const projectNumber = (data.name ?? '').split('/')[1] ?? '';
       log(`✓ Project "${projectId}" already exists — reusing it (number ${projectNumber || 'unknown'})`);
-      return projectNumber;
+      // An adopted project keeps whatever parent it already has.
+      return { projectNumber, parent: data.parent || undefined };
     }
     throw err;
   }
@@ -102,7 +108,7 @@ async function createProject(
   const projectResource = done.response as { name?: string } | undefined;
   const projectNumber = projectResource?.name?.split('/')[1] ?? '';
   log(`✓ Project created (number ${projectNumber || 'unknown'})`);
-  return projectNumber;
+  return { projectNumber, parent };
 }
 
 async function enableApis(
@@ -237,6 +243,7 @@ async function createOAuthClient(
   title: string,
   supportEmail: string,
   outputDir: string,
+  parent: string | undefined,
   log: (m: string) => void,
 ): Promise<{ clientSecretsFile: string }> {
   const iap = google.iap({ version: 'v1', auth: auth as never });
@@ -254,9 +261,18 @@ async function createOAuthClient(
   const brands = await iap.projects.brands.list({ parent: `projects/${projectId}` });
   const brand = brands.data.brands?.[0];
   if (!brand?.name) {
+    // An "Internal" consent screen requires the *project* to sit inside a
+    // Cloud organization — the caller's account type alone doesn't decide it.
     throw new Error(
-      'No OAuth consent screen (brand) is available for this project. ' +
-        'Personal Google accounts must configure the consent screen manually in the console.',
+      parent
+        ? 'No OAuth consent screen (brand) is available for this project. ' +
+            'Personal Google accounts must configure the consent screen manually in the console.'
+        : 'No OAuth consent screen (brand) is available for this project. ' +
+            "It isn't attached to a Cloud organization, so an Internal consent screen isn't available. " +
+            'Move it into your org (`gcloud projects move <id> --organization <org-id>`; find the id with ' +
+            '`gcloud organizations list`), then retry with `gcp-seeder oauth-client --project <id>` — or seed ' +
+            'with --parent organizations/<id> next time. ' +
+            'Personal Google accounts (no org) must configure the consent screen manually in the console.',
     );
   }
 
@@ -319,15 +335,42 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
     );
   }
 
+  if (options.budget && !options.billingAccount) {
+    throw new Error('options.budget requires options.billingAccount (a budget lives on the billing account).');
+  }
+  if (options.budget && !(options.budget.amountUsd > 0)) {
+    throw new Error('options.budget.amountUsd must be a positive number.');
+  }
+
   // Build labels up front so an invalid --ttl fails before anything is created.
   const labels = buildSeedLabels({ ttl: options.ttl });
   const reconcile = options.reconcile === true;
 
-  const projectNumber = await createProject(auth, projectId, displayName, options.parent, labels, reconcile, log);
+  const { projectNumber, parent: projectParent } = await createProject(auth, projectId, displayName, options.parent, labels, reconcile, log);
+
+  // Link billing BEFORE enabling APIs: most non-Workspace services refuse to
+  // enable on an unbilled project, and API-created projects start unbilled.
+  if (options.billingAccount) {
+    try {
+      await linkBillingAccount(auth, projectId, options.billingAccount, log);
+    } catch (err) {
+      // The project already exists at this point — say so, and how to finish or
+      // clean up, instead of leaving a silent half-provisioned project behind.
+      const e = err as Error;
+      e.message +=
+        ` Project ${projectId} was created but is unbilled and has no APIs enabled. ` +
+        `Either fix billing and re-run with a manifest (projectId: ${projectId}) to finish it, ` +
+        `or remove it with: gcp-seeder destroy --project ${projectId} --apply`;
+      throw e;
+    }
+  }
 
   const apisToEnable = dedupe([
     ...BOOTSTRAP_APIS,
     ...(options.wif ? WIF_APIS : []),
+    ...(options.harden ? ['compute.googleapis.com'] : []),
+    ...(options.budget ? ['billingbudgets.googleapis.com'] : []),
+    ...(options.budget?.topic || options.budget?.killSwitch ? ['pubsub.googleapis.com'] : []),
     ...options.apis,
   ]);
   const enabledApis = await enableApis(auth, projectId, apisToEnable, log);
@@ -339,6 +382,23 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
     labels,
     warnings: [],
   };
+  if (options.billingAccount) result.billingAccount = options.billingAccount;
+
+  // "Enabled" is not "usable": Service Usage returns before the API accepts
+  // calls (the #1 GCP bootstrap complaint). Wait, then actively probe.
+  const wait = options.wait !== false;
+  if (wait) {
+    log('Waiting for the enabled APIs to become usable…');
+    await waitForServicesEnabled(auth, projectId, apisToEnable, { log });
+    result.readiness = await probeApisReady(auth, projectId, apisToEnable, { log });
+    const slow = result.readiness.filter((r) => r.status === 'timeout').map((r) => r.api);
+    if (slow.length) {
+      result.warnings.push(
+        `These APIs were enabled but still not accepting calls after the wait: ${slow.join(', ')}. ` +
+          'They usually settle within a few minutes; retry your first call if it 403s.',
+      );
+    }
+  }
 
   // Resolve which service accounts to mint. An explicit `serviceAccounts` list
   // wins; otherwise `credentials.serviceAccount: true` implies one default SA.
@@ -355,7 +415,7 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
     result.serviceAccounts = [];
     result.dwdGrants = [];
     for (const spec of saSpecs) {
-      const sa = await createServiceAccount(auth, projectId, spec, reconcile, log);
+      const sa = await withApiReadyRetry(() => createServiceAccount(auth, projectId, spec, reconcile, log), { log });
       // The SA is created; a downloadable key can still be blocked by org policy.
       // Don't discard the SA over that — record a warning and carry on (like the
       // OAuth-client path). The SA + its client id are still returned.
@@ -366,7 +426,10 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
         log(`  keeping existing key(s) for ${sa.email} (reconcile)`);
       } else {
       try {
-        keyFile = await mintServiceAccountKey(auth, sa.resourceName, outputDir, spec.keyFile, log);
+        keyFile = await withApiReadyRetry(
+          () => mintServiceAccountKey(auth, sa.resourceName, outputDir, spec.keyFile, log),
+          { log },
+        );
       } catch (err) {
         if (isKeyCreationBlocked(err)) {
           result.warnings.push(
@@ -381,7 +444,11 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
         }
       }
       }
-      result.serviceAccounts.push({ email: sa.email, keyFile, clientId: sa.clientId });
+      // Project roles: a key with no roles 403s on its first call. Explicit
+      // per-SA roles win over the run-wide list. Idempotent (existing grants kept).
+      const roles = spec.roles ?? options.roles ?? [];
+      const grantedRoles = roles.length ? await grantServiceAccountRoles(auth, projectId, sa.email, roles, log) : [];
+      result.serviceAccounts.push({ email: sa.email, keyFile, clientId: sa.clientId, ...(roles.length ? { roles: grantedRoles } : {}) });
       if (spec.dwdScopes?.length) {
         result.dwdGrants.push({
           serviceAccountEmail: sa.email,
@@ -405,13 +472,13 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
         // actionable warning. Re-running `seed --wif` is idempotent and finishes.
         try {
           wifResults.push(
-            await setupGithubWif(
+            await setupWif(
               auth,
               {
                 projectId,
                 projectNumber,
                 serviceAccountEmail: sa.email,
-                repo: options.wif.repo,
+                target: options.wif,
                 outputDir,
               },
               log,
@@ -431,6 +498,35 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
     }
   }
 
+  // Budget: alerts on the billing account, scoped to this project. Optional
+  // Pub/Sub topic + a written (never deployed) kill-switch template.
+  if (options.budget && options.billingAccount) {
+    const b = options.budget;
+    const topicName = b.topic ?? (b.killSwitch ? 'gcp-seeder-budget' : undefined);
+    const pubsubTopic = topicName ? await ensureTopic(auth, projectId, topicName, log) : undefined;
+    const spec = {
+      billingAccount: options.billingAccount,
+      projectNumber,
+      projectId,
+      amountUsd: b.amountUsd,
+      thresholds: b.thresholds,
+      pubsubTopic,
+    };
+    const created = await ensureBudget(auth, spec, log);
+    result.budget = { ...created };
+    if (b.killSwitch && pubsubTopic) {
+      result.budget.killSwitchDir = await writeKillSwitchTemplate(outputDir, { ...spec, topic: pubsubTopic });
+      log(`✓ Kill-switch template written to ${result.budget.killSwitchDir} (not deployed — see its README)`);
+    }
+  }
+
+  // Remove the permissive defaults every new project ships with. The default
+  // compute SA is demoted (roles/editor removed), never deleted.
+  if (options.harden) {
+    log('Hardening project defaults…');
+    result.hardening = await hardenProjectDefaults(auth, projectId, projectNumber, {}, log);
+  }
+
   if (options.credentials.oauthClient) {
     try {
       result.oauthClient = await createOAuthClient(
@@ -439,6 +535,7 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
         options.consentScreenTitle ?? displayName,
         options.supportEmail!,
         outputDir,
+        projectParent,
         log,
       );
     } catch (err) {
@@ -450,4 +547,42 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
   }
 
   return result;
+}
+
+/**
+ * Create an OAuth client on an already-existing project — the retry path for
+ * when `seedProject`'s OAuth step failed (e.g. the project wasn't in an org
+ * yet). Reads the project's actual parent rather than trusting a flag, makes
+ * sure the IAP API is on, then runs the same brand + client creation.
+ *
+ * Unlike `seedProject`, a failure here throws: this command's only job is the
+ * OAuth client. It also refuses to overwrite an existing client_secret.json.
+ * Each successful run creates a new client; old ones are left in place.
+ */
+export async function createProjectOAuthClient(options: OAuthClientOptions): Promise<OAuthClientResult> {
+  const log = options.logger ?? (() => {});
+  const auth = await resolveAuth(options.auth);
+  const { projectId, supportEmail } = options;
+  const outputDir = options.outputDir ?? path.join(process.cwd(), 'credentials');
+
+  const target = path.join(outputDir, 'client_secret.json');
+  if (await access(target).then(() => true, () => false)) {
+    throw new Error(`${target} already exists — refusing to overwrite it. Pass a different output directory.`);
+  }
+
+  const crm = google.cloudresourcemanager({ version: 'v3', auth: auth as never });
+  const { data: project } = await crm.projects.get({ name: `projects/${projectId}` });
+  const parent = project.parent || undefined;
+  const title = options.consentScreenTitle ?? project.displayName ?? projectId;
+
+  await enableApis(auth, projectId, ['iap.googleapis.com'], log);
+  await waitForServicesEnabled(auth, projectId, ['iap.googleapis.com'], { log });
+  try {
+    const { clientSecretsFile } = await createOAuthClient(auth, projectId, title, supportEmail, outputDir, parent, log);
+    return { projectId, parent, clientSecretsFile };
+  } catch (err) {
+    throw new Error(
+      `${(err as Error).message} Finish it manually at https://console.cloud.google.com/apis/credentials?project=${projectId}`,
+    );
+  }
 }

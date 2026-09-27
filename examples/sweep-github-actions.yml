@@ -1,0 +1,72 @@
+name: gcp-seeder sweep
+
+# Runs `gcp-seeder sweep` on a schedule to delete expired projects (see the
+# README's "Labels & TTL" and "Sweep" sections). Keyless: authenticates to GCP
+# via Workload Identity Federation (see "Keyless CI auth (WIF)"), no service-
+# account key ever touches this repo or its secrets.
+#
+# Setup:
+#   1. Seed (or already have) a service account with `roles/resourcemanager.projectDeleter`
+#      and set up WIF for this repo, e.g.:
+#        npx gcp-seeder --yes --wif github:<org>/<repo> --output-dir ./credentials
+#   2. Read the pool/provider resource and SA email out of
+#      credentials/github-actions-auth.yml, then set two repo (or org) Actions
+#      *variables* (Settings -> Secrets and variables -> Actions -> Variables;
+#      these are not secrets, WIF has none to store):
+#        GCP_WIF_PROVIDER = projects/<NUMBER>/locations/global/workloadIdentityPools/gh-pool/providers/<PROVIDER>
+#        GCP_SWEEP_SA     = <sa>@<project>.iam.gserviceaccount.com
+#   3. Copy this file to .github/workflows/gcp-seeder-sweep.yml in the repo you
+#      want to run sweeps from.
+
+on:
+  schedule:
+    # Every Monday 06:00 UTC. Adjust to your TTL cadence.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Actually delete expired projects (otherwise dry-run only)"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  id-token: write # required — GitHub mints the OIDC token for WIF
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "24"
+
+      - id: auth
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SWEEP_SA }}
+
+      # Always dry-run first: shows exactly what would be deleted, and the
+      # output is uploaded even when the apply step below doesn't run.
+      - name: Sweep (dry-run)
+        run: npx gcp-seeder sweep --json | tee sweep-dry-run.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sweep-dry-run
+          path: sweep-dry-run.json
+          retention-days: 30
+
+      # Only actually delete on the scheduled run, or when explicitly
+      # requested via workflow_dispatch with apply=true.
+      - name: Sweep (apply)
+        if: github.event_name == 'schedule' || inputs.apply == 'true'
+        run: npx gcp-seeder sweep --apply --yes --json | tee sweep-apply.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: github.event_name == 'schedule' || inputs.apply == 'true'
+        with:
+          name: sweep-apply
+          path: sweep-apply.json
+          retention-days: 30

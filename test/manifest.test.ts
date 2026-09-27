@@ -70,3 +70,38 @@ test('manifestToSeedOptions maps named service accounts with defaulted keyFile',
   assert.equal(opts.serviceAccounts?.[0]?.keyFile, 'reader-sa.json');
   assert.deepEqual(opts.serviceAccounts?.[0]?.dwdScopes, ['scope-x']);
 });
+
+test('manifest: billingAccount, roles, harden, wait and budget map through (v0.5 keys)', async () => {
+  await withTempManifest(
+    [
+      'projectId: my-app',
+      'preset: ai',
+      'serviceAccount: true',
+      'billingAccount: 012345-ABCDEF-678901',
+      'harden: true',
+      'wait: false',
+      'budget:',
+      '  amountUsd: 25',
+      '  killSwitch: true',
+    ].join('\n'),
+    async (file) => {
+      const m = await loadManifest(file);
+      const opts = manifestToSeedOptions(m);
+      assert.equal(opts.billingAccount, '012345-ABCDEF-678901');
+      assert.equal(opts.harden, true);
+      assert.equal(opts.wait, false);
+      assert.deepEqual(opts.budget, { amountUsd: 25, killSwitch: true });
+      // The ai preset's least-privilege default applies when roles are not given.
+      assert.deepEqual(opts.roles, ['roles/aiplatform.user']);
+    },
+  );
+});
+
+test('manifest: explicit roles override the preset default and basic roles are rejected', async () => {
+  const opts = manifestToSeedOptions({ preset: 'ai', roles: ['roles/run.invoker'] });
+  assert.deepEqual(opts.roles, ['roles/run.invoker']);
+  assert.throws(() => manifestToSeedOptions({ roles: ['roles/editor'] }), /basic role/);
+  await withTempManifest('budget:\n  amountUsd: -5\n', async (file) => {
+    await assert.rejects(loadManifest(file), /Invalid manifest/);
+  });
+});

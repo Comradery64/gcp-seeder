@@ -21,44 +21,74 @@ const WORKLOAD_IDENTITY_USER = 'roles/iam.workloadIdentityUser';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** GitLab.com's OIDC token issuer — the trust anchor for GitLab CI federation. */
+export const GITLAB_OIDC_ISSUER = 'https://gitlab.com';
+
+/** One GitLab namespace/project path segment (letters, digits, `_`, `-`, `.`). */
+const GITLAB_SEGMENT = /^[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?$/;
+
 /**
- * Parse a `--wif` target of the form `github:owner/repo`. Only GitHub OIDC is
- * supported today; the `provider:` prefix is required so other providers can be
- * added later without ambiguity. `owner/repo` is validated against GitHub's
- * naming rules so a typo fails here rather than producing a pool that trusts
- * nothing (or, worse, the wrong repo).
+ * Parse a `--wif` target: `github:owner/repo` or `gitlab:group/project`
+ * (nested groups allowed: `gitlab:group/sub/project`). The value is validated
+ * against the provider's naming rules so a typo fails here rather than
+ * producing a pool that trusts nothing (or, worse, the wrong repo). The strict
+ * charsets also keep quotes out of the CEL attribute condition.
  */
 export function parseWifTarget(spec: string): WifTarget {
   const [scheme, ...rest] = spec.split(':');
-  const value = rest.join(':');
-  if (scheme !== 'github') {
-    throw new Error(
-      `Unsupported --wif provider "${scheme}". Only "github:owner/repo" is supported today.`,
-    );
+  const value = rest.join(':').trim();
+  if (scheme === 'github') {
+    // GitHub owner and repo charsets; keeps us from minting a pool for garbage.
+    if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\/[A-Za-z0-9._-]+$/.test(value)) {
+      throw new Error(
+        `Invalid GitHub repo "${value}" in --wif. Expected the form "github:owner/repo".`,
+      );
+    }
+    return { provider: 'github', repo: value };
   }
-  const repo = value.trim();
-  // GitHub owner and repo charsets; keeps us from minting a pool for garbage.
-  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\/[A-Za-z0-9._-]+$/.test(repo)) {
-    throw new Error(
-      `Invalid GitHub repo "${repo}" in --wif. Expected the form "github:owner/repo".`,
-    );
+  if (scheme === 'gitlab') {
+    const segments = value.split('/');
+    if (
+      segments.length < 2 ||
+      !segments.every((seg) => GITLAB_SEGMENT.test(seg) && !seg.endsWith('.git') && !seg.includes('..'))
+    ) {
+      throw new Error(
+        `Invalid GitLab project "${value}" in --wif. Expected the form "gitlab:group/project" ` +
+          '(nested groups allowed: "gitlab:group/sub/project").',
+      );
+    }
+    return { provider: 'gitlab', repo: value };
   }
-  return { provider: 'github', repo };
+  throw new Error(
+    `Unsupported --wif provider "${scheme}". Supported: "github:owner/repo", "gitlab:group/project".`,
+  );
+}
+
+/**
+ * Classify an OIDC provider's issuer URI — used by `audit` to label pools.
+ * `undefined`/empty means the provider isn't OIDC (or the field was missing).
+ */
+export function issuerLabel(issuerUri?: string): 'github' | 'gitlab' | 'other' | 'unknown' {
+  if (!issuerUri) return 'unknown';
+  const norm = issuerUri.trim().replace(/\/+$/, '');
+  if (norm === GITHUB_OIDC_ISSUER) return 'github';
+  if (norm === GITLAB_OIDC_ISSUER) return 'gitlab';
+  return 'other';
 }
 
 /**
  * Turn free-form text into a valid pool/provider id: 4-32 chars,
  * `[a-z0-9-]`, must start with a letter, must not end with a hyphen, and must
- * not start with the reserved `gcp-` prefix. We always prefix `gh-` so both the
+ * not start with the reserved `gcp-` prefix. We always prefix `gh-`/`gl-` so both the
  * "starts with a letter" and "not gcp-" rules hold regardless of input.
  */
-function toResourceId(base: string): string {
+function toResourceId(base: string, prefix = 'gh'): string {
   const slug = base
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
-  return `gh-${slug}`.slice(0, 32).replace(/-+$/g, '');
+  return `${prefix}-${slug}`.slice(0, 32).replace(/-+$/g, '');
 }
 
 /**
@@ -71,6 +101,17 @@ function repoPrincipalSet(projectNumber: string, poolId: string, repo: string): 
   return (
     `principalSet://iam.googleapis.com/projects/${projectNumber}` +
     `/locations/global/workloadIdentityPools/${poolId}/attribute.repository/${repo}`
+  );
+}
+
+/**
+ * The `principalSet://` member for a GitLab project, scoped to
+ * `attribute.project_path/<group/project>` — same safety argument as above.
+ */
+function gitlabPrincipalSet(projectNumber: string, poolId: string, projectPath: string): string {
+  return (
+    `principalSet://iam.googleapis.com/projects/${projectNumber}` +
+    `/locations/global/workloadIdentityPools/${poolId}/attribute.project_path/${projectPath}`
   );
 }
 
@@ -141,107 +182,198 @@ async function withPropagationRetry<T>(
   }
 }
 
-export interface SetupGithubWifOptions {
+export interface SetupWifOptions {
   projectId: string;
   /** Numeric project number — required for the principalSet + snippet resource names. */
   projectNumber: string;
   /** SA to bind for impersonation, e.g. "ci@proj.iam.gserviceaccount.com". */
   serviceAccountEmail: string;
-  /** "owner/repo" whose OIDC tokens may impersonate the SA. */
-  repo: string;
-  /** Pool id override. Defaults to a fixed "gh-pool" (one pool per project). */
+  /** Pool id override. Defaults to "gh-pool" (GitHub) / "gl-pool" (GitLab). */
   poolId?: string;
-  /** Provider id override. Defaults to one derived from the repo. */
+  /** Provider id override. Defaults to one derived from the repo / project path. */
   providerId?: string;
-  /** If set, the ready-to-paste workflow snippet is written here. */
+  /** If set, the ready-to-paste CI snippet is written here. */
   outputDir?: string;
 }
 
+export interface SetupGithubWifOptions extends SetupWifOptions {
+  /** "owner/repo" whose OIDC tokens may impersonate the SA. */
+  repo: string;
+}
+
+/** Per-provider trust configuration. The attribute condition is the security boundary. */
+interface ProviderProfile {
+  defaultPoolId: string;
+  idPrefix: string;
+  poolDisplayName: string;
+  issuerUri: string;
+  attributeMapping: Record<string, string>;
+  attributeCondition: string;
+  member: (projectNumber: string, poolId: string) => string;
+  snippetFile: string;
+  snippet: (providerResource: string, saEmail: string) => string;
+  snippetLabel: string;
+}
+
+function providerProfile(target: WifTarget): ProviderProfile {
+  const repo = target.repo;
+  if (target.provider === 'gitlab') {
+    return {
+      defaultPoolId: 'gl-pool',
+      idPrefix: 'gl',
+      poolDisplayName: 'GitLab CI',
+      issuerUri: GITLAB_OIDC_ISSUER,
+      attributeMapping: {
+        'google.subject': 'assertion.sub',
+        'attribute.project_path': 'assertion.project_path',
+      },
+      attributeCondition: `assertion.project_path == '${repo}'`,
+      member: (num, pool) => gitlabPrincipalSet(num, pool, repo),
+      snippetFile: 'gitlab-ci-auth.yml',
+      snippet: gitlabCiAuthSnippet,
+      snippetLabel: 'GitLab CI',
+    };
+  }
+  return {
+    defaultPoolId: 'gh-pool',
+    idPrefix: 'gh',
+    poolDisplayName: 'GitHub Actions',
+    issuerUri: GITHUB_OIDC_ISSUER,
+    attributeMapping: {
+      'google.subject': 'assertion.sub',
+      'attribute.repository': 'assertion.repository',
+      'attribute.repository_owner': 'assertion.repository_owner',
+    },
+    attributeCondition: `assertion.repository == '${repo}'`,
+    member: (num, pool) => repoPrincipalSet(num, pool, repo),
+    snippetFile: 'github-actions-auth.yml',
+    snippet: githubActionsAuthSnippet,
+    snippetLabel: 'GitHub Actions',
+  };
+}
+
+type IamOp = { done?: boolean | null; error?: unknown; name?: string | null };
+
 /**
- * Set up keyless GitHub Actions auth for a service account:
- *   1. create a workload identity pool,
- *   2. create an OIDC provider trusting GitHub's issuer, locked to `repo`,
- *   3. grant the repo's federated principal `roles/iam.workloadIdentityUser`
- *      on the SA,
- *   4. return (and optionally write) a `google-github-actions/auth` snippet.
- *
- * Pool/provider creation is idempotent: an existing pool/provider (409) is
- * reused so re-running `seed --wif` against the same project doesn't fail.
+ * After a create 409s, check whether the existing resource is soft-deleted
+ * (deleted pool/provider ids linger for ~30 days and cannot be re-created).
+ * If so, undelete it and wait for the LRO; otherwise it's live and reused.
  */
-export async function setupGithubWif(
+async function reuseOrUndelete(
+  kind: 'pool' | 'provider',
+  id: string,
+  get: () => Promise<{ data: { state?: string | null } }>,
+  undelete: () => Promise<{ data: IamOp }>,
+  getOp: (name: string) => Promise<{ data: IamOp }>,
+  log: (m: string) => void,
+): Promise<void> {
+  const { data } = await get();
+  if (data.state === 'DELETED') {
+    log(`  ${kind} "${id}" is soft-deleted (30-day recovery window) — undeleting it`);
+    const op = await undelete();
+    await waitForIamOperation(async () => (await getOp(op.data.name!)).data, log);
+    log(`  ✓ ${kind} "${id}" undeleted`);
+    return;
+  }
+  log(`  ${kind} "${id}" already exists — reusing it`);
+}
+
+/**
+ * Set up keyless CI auth (GitHub Actions or GitLab CI) for a service account:
+ *   1. create a workload identity pool,
+ *   2. create an OIDC provider trusting the CI issuer, locked to exactly one
+ *      repo / project via an attribute condition,
+ *   3. grant that repo's federated principal `roles/iam.workloadIdentityUser`
+ *      on the SA,
+ *   4. return (and optionally write) a ready-to-paste CI snippet.
+ *
+ * Idempotent: an existing pool/provider (409) is reused; a soft-deleted one is
+ * undeleted first.
+ */
+export async function setupWif(
   auth: AuthClient,
-  opts: SetupGithubWifOptions,
+  opts: SetupWifOptions & { target: WifTarget },
   log: (m: string) => void,
 ): Promise<WifResult> {
   const iam = google.iam({ version: 'v1', auth: auth as never });
-  const { projectId, projectNumber, serviceAccountEmail, repo } = opts;
-  const poolId = opts.poolId ?? 'gh-pool';
-  const providerId = opts.providerId ?? toResourceId(repo);
+  const pools = iam.projects.locations.workloadIdentityPools;
+  const { projectId, projectNumber, serviceAccountEmail, target } = opts;
+  const repo = target.repo;
+  const profile = providerProfile(target);
+  const poolId = opts.poolId ?? profile.defaultPoolId;
+  const providerId = opts.providerId ?? toResourceId(repo, profile.idPrefix);
   const locationParent = `projects/${projectId}/locations/global`;
   const poolName = `${locationParent}/workloadIdentityPools/${poolId}`;
+  const providerName = `${poolName}/providers/${providerId}`;
 
   // 1. Workload identity pool.
   log(`Creating workload identity pool "${poolId}"…`);
   try {
     const op = await withPropagationRetry(
       () =>
-        iam.projects.locations.workloadIdentityPools.create({
+        pools.create({
           parent: locationParent,
           workloadIdentityPoolId: poolId,
           requestBody: {
-            displayName: 'GitHub Actions',
+            displayName: profile.poolDisplayName,
             description: 'Keyless CI auth created by gcp-seeder',
           },
         }),
       log,
     );
-    await waitForIamOperation(
-      async () => (await iam.projects.locations.workloadIdentityPools.operations.get({ name: op.data.name! })).data,
-      log,
-    );
+    await waitForIamOperation(async () => (await pools.operations.get({ name: op.data.name! })).data, log);
   } catch (err) {
     if (!isAlreadyExists(err)) throw err;
-    log(`  pool "${poolId}" already exists — reusing it`);
+    await reuseOrUndelete(
+      'pool',
+      poolId,
+      () => pools.get({ name: poolName }),
+      () => pools.undelete({ name: poolName, requestBody: {} }),
+      (name) => pools.operations.get({ name }),
+      log,
+    );
   }
 
-  // 2. OIDC provider, locked to the target repo via an attribute condition.
-  //    Without this condition GitHub's shared issuer would let ANY repo mint a
-  //    token this pool trusts — the condition is the security boundary.
+  // 2. OIDC provider, locked to the target repo/project via an attribute
+  //    condition. Without it the shared issuer would let ANY repo/project mint
+  //    a token this pool trusts — the condition is the security boundary.
   log(`Creating OIDC provider "${providerId}" for ${repo}…`);
   try {
     const op = await withPropagationRetry(
       () =>
-        iam.projects.locations.workloadIdentityPools.providers.create({
+        pools.providers.create({
           parent: poolName,
           workloadIdentityPoolProviderId: providerId,
           requestBody: {
             displayName: repo.slice(0, 32),
-            oidc: { issuerUri: GITHUB_OIDC_ISSUER },
-            attributeMapping: {
-              'google.subject': 'assertion.sub',
-              'attribute.repository': 'assertion.repository',
-              'attribute.repository_owner': 'assertion.repository_owner',
-            },
-            attributeCondition: `assertion.repository == '${repo}'`,
+            oidc: { issuerUri: profile.issuerUri },
+            attributeMapping: profile.attributeMapping,
+            attributeCondition: profile.attributeCondition,
           },
         }),
       log,
     );
     await waitForIamOperation(
-      async () =>
-        (await iam.projects.locations.workloadIdentityPools.providers.operations.get({ name: op.data.name! })).data,
+      async () => (await pools.providers.operations.get({ name: op.data.name! })).data,
       log,
     );
   } catch (err) {
     if (!isAlreadyExists(err)) throw err;
-    log(`  provider "${providerId}" already exists — reusing it`);
+    await reuseOrUndelete(
+      'provider',
+      providerId,
+      () => pools.providers.get({ name: providerName }),
+      () => pools.providers.undelete({ name: providerName, requestBody: {} }),
+      (name) => pools.providers.operations.get({ name }),
+      log,
+    );
   }
 
-  // 3. Bind the repo's federated principal to the SA (read-modify-write policy).
+  // 3. Bind the federated principal to the SA (read-modify-write policy).
   //    A just-created SA can 403 here for the same propagation reason pools do,
   //    so retry the whole read-modify-write under the same backoff.
   const saResource = `projects/${projectId}/serviceAccounts/${serviceAccountEmail}`;
-  const member = repoPrincipalSet(projectNumber, poolId, repo);
+  const member = profile.member(projectNumber, poolId);
   log(`Granting ${WORKLOAD_IDENTITY_USER} to ${repo} on ${serviceAccountEmail}…`);
   await withPropagationRetry(async () => {
     const { data: policy } = await iam.projects.serviceAccounts.getIamPolicy({ resource: saResource });
@@ -270,16 +402,26 @@ export async function setupGithubWif(
     repo,
   };
 
-  // 4. Ready-to-paste GitHub Actions snippet.
+  // 4. Ready-to-paste CI snippet.
   if (opts.outputDir) {
-    const file = path.join(opts.outputDir, 'github-actions-auth.yml');
+    const file = path.join(opts.outputDir, profile.snippetFile);
     await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(file, githubActionsAuthSnippet(providerResource, serviceAccountEmail), 'utf8');
+    await writeFile(file, profile.snippet(providerResource, serviceAccountEmail), 'utf8');
     result.workflowSnippetFile = file;
-    log(`✓ GitHub Actions auth snippet written to ${file}`);
+    log(`✓ ${profile.snippetLabel} auth snippet written to ${file}`);
   }
 
   return result;
+}
+
+/** GitHub-only entry point kept for existing callers; delegates to {@link setupWif}. */
+export async function setupGithubWif(
+  auth: AuthClient,
+  opts: SetupGithubWifOptions,
+  log: (m: string) => void,
+): Promise<WifResult> {
+  const { repo, ...rest } = opts;
+  return setupWif(auth, { ...rest, target: { provider: 'github', repo } }, log);
 }
 
 /**
@@ -343,6 +485,30 @@ export function githubActionsAuthSnippet(providerResource: string, serviceAccoun
     '    with:',
     `      workload_identity_provider: ${providerResource}`,
     `      service_account: ${serviceAccountEmail}`,
+    '',
+  ].join('\n');
+}
+
+/**
+ * A ready-to-paste GitLab CI job fragment. GitLab mints the OIDC token via
+ * `id_tokens`; gcloud exchanges it through the provider and impersonates the
+ * SA. Public, non-secret configuration — no key material.
+ */
+export function gitlabCiAuthSnippet(providerResource: string, serviceAccountEmail: string): string {
+  return [
+    '# Keyless auth via Workload Identity Federation — no service-account key needed.',
+    '# Merge into a job that has the gcloud CLI available.',
+    'gcp-auth:',
+    '  id_tokens:',
+    '    GITLAB_OIDC_TOKEN:',
+    `      aud: https://iam.googleapis.com/${providerResource}`,
+    '  script:',
+    '    - echo "$GITLAB_OIDC_TOKEN" > .ci_job_jwt_file',
+    `    - gcloud iam workload-identity-pools create-cred-config ${providerResource}`,
+    `      --service-account=${serviceAccountEmail}`,
+    '      --credential-source-file=.ci_job_jwt_file',
+    '      --output-file=.gcp_temp_cred.json',
+    '    - gcloud auth login --cred-file=.gcp_temp_cred.json',
     '',
   ].join('\n');
 }

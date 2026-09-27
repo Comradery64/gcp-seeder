@@ -16,6 +16,16 @@ function stubApis() {
           labels: { 'seeded-by': 'gcp-seeder', 'seeded-at': '2026-07-01' },
         },
       }),
+      getIamPolicy: async () => ({
+        data: {
+          bindings: [
+            { role: 'roles/aiplatform.user', members: ['serviceAccount:ci@seed-proj.iam.gserviceaccount.com', 'user:someone@example.com'] },
+            { role: 'roles/owner', members: ['user:someone@example.com'] },
+            { role: 'roles/editor', members: ['serviceAccount:999-compute@developer.gserviceaccount.com'] },
+            { role: 'roles/run.invoker', members: ['serviceAccount:ci@seed-proj.iam.gserviceaccount.com'], condition: { expression: 'true' } },
+          ],
+        },
+      }),
     },
   }) as never);
   mock.method(google, 'serviceusage', () => ({
@@ -53,6 +63,13 @@ function stubApis() {
       },
     },
   }) as never);
+  mock.method(google, 'cloudbilling', () => ({
+    projects: {
+      getBillingInfo: async () => ({
+        data: { billingEnabled: true, billingAccountName: 'billingAccounts/012345-ABCDEF-678901' },
+      }),
+    },
+  }) as never);
 }
 
 test('renders Terraform for project, APIs, user SAs, and WIF', async () => {
@@ -74,6 +91,14 @@ test('renders Terraform for project, APIs, user SAs, and WIF', async () => {
   assert.match(hcl, /account_id   = "ci"/);
   assert.doesNotMatch(hcl, /compute@developer/);
 
+  // SA role bindings exported as google_project_iam_member; user members, default SA and conditional bindings are not
+  assert.match(hcl, /resource "google_project_iam_member" "ci_aiplatform_user"/);
+  assert.match(hcl, /role    = "roles\/aiplatform\.user"/);
+  assert.match(hcl, /member  = "serviceAccount:\$\{google_service_account\.ci\.email\}"/);
+  assert.doesNotMatch(hcl, /run\.invoker/);
+  assert.doesNotMatch(hcl, /someone@example\.com/);
+  assert.equal(counts.iamMembers, 1);
+
   // WIF pool + provider with the repo-locked condition
   assert.match(hcl, /resource "google_iam_workload_identity_pool" "pool_gh_pool"/);
   assert.match(hcl, /workload_identity_pool_id = "gh-pool"/);
@@ -81,19 +106,46 @@ test('renders Terraform for project, APIs, user SAs, and WIF', async () => {
   assert.match(hcl, /attribute_condition = "assertion\.repository == 'acme\/repo'"/);
   assert.match(hcl, /issuer_uri = "https:\/\/token\.actions\.githubusercontent\.com"/);
 
-  assert.deepEqual(counts, { services: 2, serviceAccounts: 1, wifPools: 1 });
+  // linked billing account, prefix stripped
+  assert.match(hcl, /billing_account = "012345-ABCDEF-678901"/);
+
+  assert.deepEqual(counts, { services: 2, serviceAccounts: 1, iamMembers: 1, wifPools: 1 });
 });
 
 test('export tolerates a project with no WIF pools (API off)', async () => {
   mock.method(google, 'cloudresourcemanager', () => ({
-    projects: { get: async () => ({ data: { projectId: 'p', displayName: 'P' } }) },
+    projects: { get: async () => ({ data: { projectId: 'p', displayName: 'P' } }), getIamPolicy: async () => { throw Object.assign(new Error('denied'), { code: 403 }); } },
   }) as never);
   mock.method(google, 'serviceusage', () => ({ services: { list: async () => ({ data: { services: [] } }) } }) as never);
   mock.method(google, 'iam', () => ({
     projects: { serviceAccounts: { list: async () => ({ data: { accounts: [] } }) } }, // no `locations` → listWifPools throws → caught
   }) as never);
+  mock.method(google, 'cloudbilling', () => ({
+    projects: { getBillingInfo: async () => ({ data: { billingEnabled: false } }) },
+  }) as never);
 
   const { hcl, counts } = await exportProjectTerraform({ projectId: 'p', auth: {} as never });
   assert.match(hcl, /resource "google_project" "p"/);
-  assert.deepEqual(counts, { services: 0, serviceAccounts: 0, wifPools: 0 });
+  assert.doesNotMatch(hcl, /billing_account/);
+  assert.deepEqual(counts, { services: 0, serviceAccounts: 0, iamMembers: 0, wifPools: 0 });
+});
+
+test('export treats a 403 on getBillingInfo as unlinked rather than failing', async () => {
+  mock.method(google, 'cloudresourcemanager', () => ({
+    projects: { get: async () => ({ data: { projectId: 'p2', displayName: 'P2' } }), getIamPolicy: async () => ({ data: { bindings: [] } }) },
+  }) as never);
+  mock.method(google, 'serviceusage', () => ({ services: { list: async () => ({ data: { services: [] } }) } }) as never);
+  mock.method(google, 'iam', () => ({
+    projects: { serviceAccounts: { list: async () => ({ data: { accounts: [] } }) } },
+  }) as never);
+  mock.method(google, 'cloudbilling', () => ({
+    projects: {
+      getBillingInfo: async () => {
+        throw Object.assign(new Error('forbidden'), { code: 403 });
+      },
+    },
+  }) as never);
+
+  const { hcl } = await exportProjectTerraform({ projectId: 'p2', auth: {} as never });
+  assert.doesNotMatch(hcl, /billing_account/);
 });

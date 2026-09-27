@@ -33,7 +33,7 @@ test('reconcile: an existing project + SA are reused, and no new key is minted',
     operations: { get: async () => ({ data: { done: true } }) },
   }) as never);
   mock.method(google, 'serviceusage', () => ({
-    services: { batchEnable: async () => ({ data: { name: 'operations/su1' } }) },
+    services: { batchEnable: async () => ({ data: { name: 'operations/su1' } }), get: async () => ({ data: { state: 'ENABLED' } }) },
     operations: { get: async () => ({ data: { done: true } }) },
   }) as never);
 
@@ -57,7 +57,7 @@ test('reconcile: an existing project + SA are reused, and no new key is minted',
   );
 
   assert.equal(res.projectNumber, '555000', 'reused the existing project number');
-  assert.equal(projectGet.mock.callCount(), 1);
+  assert.ok(projectGet.mock.callCount() >= 1, 'existing project was read (readiness probe may read it again)');
   assert.equal(saGet.mock.callCount(), 1, 'looked up the existing SA');
   assert.equal(keyCreate.mock.callCount(), 0, 'must NOT mint a new key for an existing SA');
   assert.equal(res.serviceAccounts?.[0]?.email, 'reader@p.iam.gserviceaccount.com');
@@ -84,4 +84,35 @@ test('without reconcile, an existing project still throws (plain seed is unchang
     ),
     /already exists/,
   );
+});
+
+test('reconcile: no-brand warning uses the adopted project\'s real parent, not the missing --parent', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  mock.method(google, 'cloudresourcemanager', () => ({
+    projects: { create: mock.fn(conflict), get: async () => ({ data: { name: 'projects/555000', parent: 'organizations/123456789' } }) },
+    operations: { get: async () => ({ data: { done: true } }) },
+  }) as never);
+  mock.method(google, 'serviceusage', () => ({
+    services: { batchEnable: async () => ({ data: { name: 'operations/su1' } }), get: async () => ({ data: { state: 'ENABLED' } }) },
+    operations: { get: async () => ({ data: { done: true } }) },
+  }) as never);
+  mock.method(google, 'iap', () => ({
+    projects: { brands: { create: async () => { throw new Error('rejected'); }, list: async () => ({ data: { brands: [] } }) } },
+  }) as never);
+
+  const res = await drain(
+    seedProject({
+      projectId: 'seed-reconcile-3',
+      wait: false,
+      apis: [],
+      credentials: { serviceAccount: false, oauthClient: true },
+      supportEmail: 'admin@example.com',
+      reconcile: true,
+      auth: {} as never,
+      logger: () => {},
+    }),
+  );
+  const w = res.warnings.find((x) => /Could not create OAuth client/.test(x)) ?? '';
+  assert.ok(w, 'expected an OAuth warning');
+  assert.doesNotMatch(w, /isn't attached to a Cloud organization/);
 });
