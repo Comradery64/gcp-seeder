@@ -18,9 +18,9 @@ tree. Context firewall: workers write to
 Worker deliverables (absolute paths, so they work from any worktree):
 
 ```
-/Users/alan.livshin/Dev/Personal/gcp-seeder/.frugal-fable/v0.5/<slice>/patch.diff   # git diff --cached --binary vs branch base
-/Users/alan.livshin/Dev/Personal/gcp-seeder/.frugal-fable/v0.5/<slice>/report.md     # what/why/tests/open questions
-/Users/alan.livshin/Dev/Personal/gcp-seeder/.frugal-fable/v0.5/<slice>/README-section.md  # the README text for this feature
+<repo>/.frugal-fable/v0.5/<slice>/patch.diff   # git diff --cached --binary vs branch base
+<repo>/.frugal-fable/v0.5/<slice>/report.md     # what/why/tests/open questions
+<repo>/.frugal-fable/v0.5/<slice>/README-section.md  # the README text for this feature
 ```
 
 ## Routing table (static floor; ▲ = logged upward override)
