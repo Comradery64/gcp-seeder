@@ -33,16 +33,21 @@ export interface ServiceAccountSpec {
    * id + these scopes for you to authorize by hand in the Admin console.
    */
   dwdScopes?: string[];
+  /**
+   * Project-level IAM roles to grant this SA (e.g. ["roles/aiplatform.user"]).
+   * Overrides `SeedOptions.roles` for this SA. Keep these minimal.
+   */
+  roles?: string[];
 }
 
 /**
- * A keyless-auth target for Workload Identity Federation. Only GitHub OIDC is
- * supported today; `provider` is kept explicit so other OIDC providers can be
- * added without changing the flag shape.
+ * A keyless-auth target for Workload Identity Federation: GitHub Actions or
+ * GitLab CI (gitlab.com) OIDC. For `github`, `repo` is "owner/repo"; for
+ * `gitlab`, `repo` is the full project path "group[/subgroup...]/project".
  */
 export interface WifTarget {
-  provider: 'github';
-  /** "owner/repo" whose GitHub Actions OIDC tokens may impersonate the SA. */
+  provider: 'github' | 'gitlab';
+  /** "owner/repo" (GitHub) or "group/project" (GitLab) whose CI OIDC tokens may impersonate the SA. */
   repo: string;
 }
 
@@ -134,6 +139,45 @@ export interface SeedOptions {
    * lapses. Omit for a project with no expiry.
    */
   ttl?: string;
+  /**
+   * Billing account to link right after the project is created (before APIs
+   * are enabled — most non-Workspace APIs refuse to enable on an unbilled
+   * project). "012345-ABCDEF-678901" or "billingAccounts/…". Omit to leave the
+   * project unbilled.
+   */
+  billingAccount?: string;
+  /**
+   * Project-level IAM roles granted to every created service account, unless
+   * a `ServiceAccountSpec.roles` overrides it. Least privilege: pass the
+   * specific roles the consumer needs, never owner/editor.
+   */
+  roles?: string[];
+  /**
+   * After enabling APIs, wait until they are actually usable (Service Usage
+   * reports ENABLED and a cheap probe call succeeds) before continuing.
+   * Default true; set false to skip the wait.
+   */
+  wait?: boolean;
+  /**
+   * Delete the default VPC network (and its firewall rules) and remove
+   * roles/editor from the default compute service account. Enables the
+   * Compute API to do so. Default false.
+   */
+  harden?: boolean;
+  /**
+   * Create a billing budget for this project (requires `billingAccount`),
+   * optionally with a Pub/Sub topic and a written (not deployed) kill-switch
+   * Cloud Function template that unlinks billing when spend reaches the amount.
+   */
+  budget?: {
+    amountUsd: number;
+    /** Alert thresholds as fractions. Default [0.5, 0.9, 1.0]. */
+    thresholds?: number[];
+    /** Pub/Sub topic name (short) to create/reuse for notifications. */
+    topic?: string;
+    /** Write the kill-switch Cloud Function template to `outputDir/billing-killswitch/`. Implies a topic. */
+    killSwitch?: boolean;
+  };
   /**
    * Reconcile mode (used by manifest apply): treat an already-existing project
    * or service account as success and continue, rather than failing. Existing
@@ -259,6 +303,14 @@ export interface DestroyOptions {
   apply?: boolean;
   /** Allow targeting projects that don't match an orphan pattern. Default false. */
   force?: boolean;
+  /** Remove any liens found on a project before deleting it. Default false (liened projects are skipped). */
+  removeLiens?: boolean;
+  /**
+   * Empty mode: revoke keys + WIF pools, delete user service accounts, delete
+   * the seeder budget, disable non-bootstrap APIs — but KEEP the project (and
+   * its id). Mutually exclusive with `keysOnly`.
+   */
+  empty?: boolean;
   /** Orphan patterns used for the safety check. Default: ["gyb-project-*", "seed-*"]. */
   flagPatterns?: string[];
   auth?: AuthClient;
@@ -301,6 +353,8 @@ export interface SweepOptions {
   flagPatterns?: string[];
   /** Reference "now" for expiry/age math. Injectable for tests; defaults to the wall clock. */
   now?: Date;
+  /** Remove liens before deleting (passed through to destroy). Default false. */
+  removeLiens?: boolean;
   auth?: AuthClient;
   logger?: (message: string) => void;
 }
@@ -393,7 +447,7 @@ export interface ExportResult {
   projectId: string;
   /** The rendered Terraform HCL. */
   hcl: string;
-  counts: { services: number; serviceAccounts: number; wifPools: number };
+  counts: { services: number; serviceAccounts: number; iamMembers: number; wifPools: number };
 }
 
 /**
@@ -430,7 +484,29 @@ export interface SeedResult {
     keyFile: string | null;
     /** OAuth client id (uniqueId) — used for domain-wide-delegation grants. */
     clientId: string;
+    /** Project roles granted to this SA during this run (already-held roles are not repeated). */
+    roles?: string[];
   }>;
+  /** Billing account linked to the project, if one was. */
+  billingAccount?: string;
+  /** Per-API readiness probe outcome (only when `wait` was not disabled). */
+  readiness?: Array<{ api: string; status: 'ready' | 'timeout' | 'skipped' }>;
+  /** Budget created/reused, if `budget` was set. */
+  budget?: {
+    name: string;
+    displayName: string;
+    existed: boolean;
+    pubsubTopic?: string;
+    /** Directory the kill-switch template was written to, if requested. */
+    killSwitchDir?: string;
+  };
+  /** What `harden` removed, if requested. */
+  hardening?: {
+    defaultNetworkDeleted: boolean;
+    firewallRulesDeleted: string[];
+    defaultComputeSaEditorRemoved: boolean;
+    skipped: string[];
+  };
   /**
    * Domain-wide-delegation grants still to authorize by hand (one per SA that
    * declared `dwdScopes`). No API can create these.

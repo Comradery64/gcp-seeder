@@ -50,7 +50,7 @@ test('happy path: creates the project and enables the requested APIs', async () 
   const batchEnable = mock.fn(async () => ({ data: { name: 'operations/su1' } }));
   const suGet = mock.fn(async () => ({ data: { done: true } }));
   mock.method(google, 'cloudresourcemanager', () => ({ projects: { create }, operations: { get: crmGet } }) as never);
-  mock.method(google, 'serviceusage', () => ({ services: { batchEnable }, operations: { get: suGet } }) as never);
+  mock.method(google, 'serviceusage', () => ({ services: { batchEnable, get: async () => ({ data: { state: 'ENABLED' } }) }, operations: { get: suGet } }) as never);
 
   const promise = seedProject({
     projectId: 'seed-unit-1',
@@ -81,7 +81,7 @@ test('creates multiple named service accounts and surfaces DWD grants', async ()
   const batchEnable = mock.fn(async () => ({ data: { name: 'operations/su1' } }));
   const suGet = mock.fn(async () => ({ data: { done: true } }));
   mock.method(google, 'cloudresourcemanager', () => ({ projects: { create }, operations: { get: crmGet } }) as never);
-  mock.method(google, 'serviceusage', () => ({ services: { batchEnable }, operations: { get: suGet } }) as never);
+  mock.method(google, 'serviceusage', () => ({ services: { batchEnable, get: async () => ({ data: { state: 'ENABLED' } }) }, operations: { get: suGet } }) as never);
 
   // Each SA create returns a distinct email + uniqueId (the DWD client id).
   let n = 0;
@@ -136,7 +136,7 @@ test('org policy blocking SA key creation warns instead of throwing', async () =
   const batchEnable = mock.fn(async () => ({ data: { name: 'operations/su1' } }));
   const suGet = mock.fn(async () => ({ data: { done: true } }));
   mock.method(google, 'cloudresourcemanager', () => ({ projects: { create }, operations: { get: crmGet } }) as never);
-  mock.method(google, 'serviceusage', () => ({ services: { batchEnable }, operations: { get: suGet } }) as never);
+  mock.method(google, 'serviceusage', () => ({ services: { batchEnable, get: async () => ({ data: { state: 'ENABLED' } }) }, operations: { get: suGet } }) as never);
 
   // SA creation succeeds, but the org forbids downloadable keys.
   const saCreate = mock.fn(async () => ({ data: { name: 'projects/p/serviceAccounts/sa1', email: 'sa1@p.iam.gserviceaccount.com', uniqueId: '111' } }));
@@ -195,6 +195,7 @@ for (const [parent, expected, absent] of [
     const promise = seedProject({
       projectId: 'seed-unit-oauth',
       parent,
+      wait: false,
       apis: [],
       credentials: { serviceAccount: false, oauthClient: true },
       supportEmail: 'admin@example.com',
@@ -218,7 +219,8 @@ function mockOAuthApis(opts: { parent?: string; brands: { name: string }[] }) {
   mock.method(google, 'cloudresourcemanager', () => ({
     projects: { get: async () => ({ data: { displayName: 'Demo App', parent: opts.parent } }) },
   }) as never);
-  mock.method(google, 'serviceusage', () => ({ services: { batchEnable }, operations: { get: async () => ({ data: { done: true } }) } }) as never);
+  const suGet = mock.fn(async () => ({ data: { state: 'ENABLED' } }));
+  mock.method(google, 'serviceusage', () => ({ services: { batchEnable, get: suGet }, operations: { get: async () => ({ data: { done: true } }) } }) as never);
   const clientCreate = mock.fn(async () => ({ data: { name: 'projects/1/brands/1/identityAwareProxyClients/cid-123', secret: 'placeholder-secret' } }));
   mock.method(google, 'iap', () => ({
     projects: {
@@ -229,7 +231,7 @@ function mockOAuthApis(opts: { parent?: string; brands: { name: string }[] }) {
       },
     },
   }) as never);
-  return { batchEnable, clientCreate };
+  return { batchEnable, suGet, clientCreate };
 }
 
 async function drain<T>(p: Promise<T>): Promise<T> {
@@ -243,12 +245,13 @@ async function drain<T>(p: Promise<T>): Promise<T> {
 
 test('oauth-client: adds a client to an existing project and writes client_secret.json', async () => {
   mock.timers.enable({ apis: ['setTimeout'] });
-  const { batchEnable, clientCreate } = mockOAuthApis({ parent: 'organizations/123456789', brands: [{ name: 'projects/1/brands/1' }] });
+  const { batchEnable, suGet, clientCreate } = mockOAuthApis({ parent: 'organizations/123456789', brands: [{ name: 'projects/1/brands/1' }] });
   const dir = await mkdtemp(path.join(tmpdir(), 'seeder-oauth-'));
   try {
     const res = await drain(createProjectOAuthClient({ projectId: 'seed-unit-oauth', supportEmail: 'admin@example.com', outputDir: dir, auth: {} as never }));
     assert.equal(res.parent, 'organizations/123456789');
     assert.equal(batchEnable.mock.callCount(), 1);
+    assert.ok(suGet.mock.callCount() >= 1, 'waits for IAP to report ENABLED');
     assert.equal(clientCreate.mock.callCount(), 1);
     const file = JSON.parse(await readFile(res.clientSecretsFile, 'utf8'));
     assert.equal(file.installed.client_id, 'cid-123');

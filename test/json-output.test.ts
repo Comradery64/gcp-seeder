@@ -35,7 +35,7 @@ test('SeedResult round-trips through JSON', async () => {
     operations: { get: async () => ({ data: { done: true, response: { name: 'projects/424242' } } }) },
   }) as never);
   mock.method(google, 'serviceusage', () => ({
-    services: { batchEnable: async () => ({ data: { name: 'operations/su1' } }) },
+    services: { batchEnable: async () => ({ data: { name: 'operations/su1' } }), get: async () => ({ data: { state: 'ENABLED' } }) },
     operations: { get: async () => ({ data: { done: true } }) },
   }) as never);
 

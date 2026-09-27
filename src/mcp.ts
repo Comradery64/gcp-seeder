@@ -7,6 +7,9 @@ import { rotateServiceAccountKey } from './rotate.js';
 import { seedProject } from './seeder.js';
 import { sweepProjects } from './sweep.js';
 import { parseWifTarget } from './wif.js';
+import { explainGoogleError } from './errors.js';
+import { preflight } from './preflight.js';
+import { validateRoles } from './roles.js';
 import { VERSION } from './version.js';
 
 /**
@@ -64,16 +67,43 @@ export const MCP_TOOLS: McpTool[] = [
       }),
   },
   {
+    name: 'gcp_seeder_preflight',
+    description:
+      'Read-only. Check BEFORE creating a project: credentials, project-id availability, project quota headroom, parent permission, billing account + permission, org policies (SA key creation, default network), and bootstrap APIs. Returns pass/warn/fail/skip per check.',
+    inputSchema: {
+      projectId: z.string().optional(),
+      parent: z.string().optional().describe('organizations/123 or folders/456'),
+      billingAccount: z.string().optional(),
+      apis: z.array(z.string()).optional(),
+      wantsServiceAccountKey: z.boolean().optional(),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+    handler: (a) =>
+      preflight({
+        projectId: a.projectId as string | undefined,
+        parent: a.parent as string | undefined,
+        billingAccount: a.billingAccount as string | undefined,
+        apis: a.apis as string[] | undefined,
+        wantsServiceAccountKey: a.wantsServiceAccountKey as boolean | undefined,
+        logger: mcpLog,
+      }),
+  },
+  {
     name: 'gcp_seeder_seed',
     description:
-      'Create a GCP project: enable APIs, optionally a service account and keyless GitHub Actions auth (WIF), and stamp ownership + TTL labels. Creates real cloud resources.',
+      'Create a GCP project: link billing, enable APIs (and wait until usable), optionally a service account with least-privilege roles, keyless CI auth (WIF, GitHub or GitLab), a budget, default-resource hardening, and ownership + TTL labels. Creates real cloud resources.',
     inputSchema: {
       projectId: z.string().optional(),
       displayName: z.string().optional(),
       parent: z.string().optional().describe('organizations/123 or folders/456'),
       apis: z.array(z.string()).optional().describe('serviceusage names, e.g. ["run.googleapis.com"]'),
       serviceAccount: z.boolean().optional().describe('Also create a default service account'),
-      wif: z.string().optional().describe('Keyless GitHub Actions auth, e.g. "github:owner/repo"'),
+      roles: z.array(z.string()).optional().describe('Project roles for the SA, e.g. ["roles/aiplatform.user"] (no owner/editor)'),
+      billingAccount: z.string().optional().describe('Billing account to link (most non-Workspace APIs need one)'),
+      budgetUsd: z.number().positive().optional().describe('Create a budget with 50/90/100% alerts (requires billingAccount)'),
+      harden: z.boolean().optional().describe('Delete the default network; demote the default compute SA'),
+      wait: z.boolean().optional().describe('Wait for enabled APIs to become usable (default true)'),
+      wif: z.string().optional().describe('Keyless CI auth, e.g. "github:owner/repo" or "gitlab:group/project"'),
       ttl: z.string().optional().describe('Expiry for sweep to reclaim, e.g. "30d"'),
       outputDir: z.string().optional(),
     },
@@ -85,6 +115,11 @@ export const MCP_TOOLS: McpTool[] = [
         parent: a.parent as string | undefined,
         apis: (a.apis as string[] | undefined) ?? [],
         credentials: { serviceAccount: Boolean(a.serviceAccount) || Boolean(a.wif), oauthClient: false },
+        roles: a.roles ? validateRoles(a.roles as string[]) : undefined,
+        billingAccount: a.billingAccount as string | undefined,
+        budget: a.budgetUsd ? { amountUsd: a.budgetUsd as number } : undefined,
+        harden: a.harden as boolean | undefined,
+        wait: a.wait as boolean | undefined,
         wif: a.wif ? parseWifTarget(a.wif as string) : undefined,
         ttl: a.ttl as string | undefined,
         outputDir: a.outputDir as string | undefined,
@@ -98,6 +133,7 @@ export const MCP_TOOLS: McpTool[] = [
     inputSchema: {
       apply: applyFlag,
       maxAge: z.string().optional().describe('Also sweep projects older than this even without an expiry (e.g. "30d")'),
+      removeLiens: z.boolean().optional().describe('Remove liens before deleting (otherwise liened projects are skipped)'),
       flagPatterns: z.array(z.string()).optional(),
     },
     annotations: { destructiveHint: true, openWorldHint: true },
@@ -105,6 +141,7 @@ export const MCP_TOOLS: McpTool[] = [
       sweepProjects({
         apply: a.apply as boolean,
         maxAge: a.maxAge as string | undefined,
+        removeLiens: a.removeLiens as boolean | undefined,
         flagPatterns: a.flagPatterns as string[] | undefined,
         logger: mcpLog,
       }),
@@ -117,6 +154,8 @@ export const MCP_TOOLS: McpTool[] = [
       projectIds: z.array(z.string()).min(1).describe('Explicit project ids — never wildcards'),
       apply: applyFlag,
       keysOnly: z.boolean().optional().describe('Only revoke standing credentials; keep the project'),
+      empty: z.boolean().optional().describe('Remove the seeder-managed surface (keys, WIF, SAs, budget, APIs) but keep the project and its id'),
+      removeLiens: z.boolean().optional().describe('Remove liens before deleting (otherwise liened projects are skipped)'),
       force: z.boolean().optional().describe('Allow projects that are not seeder-owned / orphan-matched'),
     },
     annotations: { destructiveHint: true, openWorldHint: true },
@@ -125,6 +164,8 @@ export const MCP_TOOLS: McpTool[] = [
         projectIds: a.projectIds as string[],
         apply: a.apply as boolean,
         keysOnly: a.keysOnly as boolean | undefined,
+        empty: a.empty as boolean | undefined,
+        removeLiens: a.removeLiens as boolean | undefined,
         force: a.force as boolean | undefined,
         logger: mcpLog,
       }),
@@ -161,8 +202,14 @@ export function buildMcpServer(): McpServer {
       tool.name,
       { description: tool.description, inputSchema: tool.inputSchema, annotations: tool.annotations },
       async (args: Record<string, unknown>) => {
-        const result = await tool.handler(args);
-        return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+        try {
+          const result = await tool.handler(args);
+          return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
+        } catch (err) {
+          // Give the agent a classified error (kind + fix) instead of a raw stack.
+          const explained = explainGoogleError(err, { projectId: args.projectId as string | undefined });
+          return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: explained }, null, 2) }] };
+        }
       },
     );
   }

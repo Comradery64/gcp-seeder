@@ -84,6 +84,7 @@ export async function sweepProjects(options: SweepOptions = {}): Promise<SweepRe
     destroy = await destroyProjects({
       projectIds: selectedIds,
       apply: options.apply,
+      removeLiens: options.removeLiens,
       flagPatterns: options.flagPatterns,
       auth,
       logger: options.logger,

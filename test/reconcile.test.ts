@@ -33,7 +33,7 @@ test('reconcile: an existing project + SA are reused, and no new key is minted',
     operations: { get: async () => ({ data: { done: true } }) },
   }) as never);
   mock.method(google, 'serviceusage', () => ({
-    services: { batchEnable: async () => ({ data: { name: 'operations/su1' } }) },
+    services: { batchEnable: async () => ({ data: { name: 'operations/su1' } }), get: async () => ({ data: { state: 'ENABLED' } }) },
     operations: { get: async () => ({ data: { done: true } }) },
   }) as never);
 
@@ -57,7 +57,7 @@ test('reconcile: an existing project + SA are reused, and no new key is minted',
   );
 
   assert.equal(res.projectNumber, '555000', 'reused the existing project number');
-  assert.equal(projectGet.mock.callCount(), 1);
+  assert.ok(projectGet.mock.callCount() >= 1, 'existing project was read (readiness probe may read it again)');
   assert.equal(saGet.mock.callCount(), 1, 'looked up the existing SA');
   assert.equal(keyCreate.mock.callCount(), 0, 'must NOT mint a new key for an existing SA');
   assert.equal(res.serviceAccounts?.[0]?.email, 'reader@p.iam.gserviceaccount.com');
