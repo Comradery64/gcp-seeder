@@ -16,7 +16,7 @@ import { explainGoogleError, formatExplainedError } from './errors.js';
 import { resolveBillingAccount } from './billing.js';
 import { PRESET_ROLES, validateRoles } from './roles.js';
 import { resolveAuth } from './auth.js';
-import { preflight } from './preflight.js';
+import { findAccessibleOrganizations, preflight } from './preflight.js';
 import type { PreflightReport } from './preflight.js';
 import { loadManifest, manifestToSeedOptions } from './manifest.js';
 import { VERSION } from './version.js';
@@ -71,8 +71,9 @@ program
   .option('--apis <list>', 'Comma-separated APIs you intend to enable')
   .option('--preset <name>', `Preset whose APIs you intend to enable: ${ALL_PRESETS.join(', ')}`)
   .option('--service-account', 'Plan includes a downloadable SA key (checks the key-creation org policy)')
+  .option('--oauth-client', 'Plan includes an OAuth client (checks the project will be inside an org)')
   .option('--json', 'Emit the PreflightReport as JSON')
-  .action(async (opts: { projectId?: string; parent?: string; billingAccount?: string; apis?: string; preset?: string; serviceAccount?: boolean; json?: boolean }) => {
+  .action(async (opts: { projectId?: string; parent?: string; billingAccount?: string; apis?: string; preset?: string; serviceAccount?: boolean; oauthClient?: boolean; json?: boolean }) => {
     const apis = opts.apis
       ? opts.apis.split(',').map((s) => s.trim()).filter(Boolean)
       : opts.preset
@@ -84,6 +85,7 @@ program
       billingAccount: opts.billingAccount,
       apis,
       wantsServiceAccountKey: Boolean(opts.serviceAccount) || Boolean(PROVISIONING_PRESETS[opts.preset ?? '']),
+      wantsOAuthClient: Boolean(opts.oauthClient),
       logger: opts.json ? undefined : log,
     });
     if (opts.json) {
@@ -533,13 +535,30 @@ async function run(opts: CliOptions): Promise<void> {
 
   // Preflight: catch quota / billing / org-policy / burned-id problems before
   // anything exists. A `fail` stops the run; warn/skip are printed and continue.
+  // An OAuth client needs the project inside an org for an Internal consent
+  // screen. In the wizard, offer the org(s) the caller can see.
+  let parent = opts.parent;
+  if (interactive && credentials.oauthClient && !parent) {
+    const orgs = await findAccessibleOrganizations(await resolveAuth()).catch(() => []);
+    if (orgs.length) {
+      parent = await select({
+        message: 'No --parent given. An OAuth client needs the project inside an org. Create it under:',
+        choices: [
+          ...orgs.map((o) => ({ name: `${o.displayName ?? o.name} (${o.name})`, value: o.name as string | undefined })),
+          { name: 'No parent (OAuth client will likely need finishing in the console)', value: undefined },
+        ],
+      });
+    }
+  }
+
   if (!opts.skipPreflight) {
     const report = await preflight({
       projectId,
-      parent: opts.parent,
+      parent,
       billingAccount,
       apis,
       wantsServiceAccountKey: credentials.serviceAccount || serviceAccounts.length > 0,
+      wantsOAuthClient: credentials.oauthClient,
       logger: json ? undefined : undefined,
     });
     if (!json) printPreflightReport(report);
@@ -585,7 +604,7 @@ async function run(opts: CliOptions): Promise<void> {
   const result = await seedProject({
     projectId,
     displayName: opts.name,
-    parent: opts.parent,
+    parent,
     apis,
     credentials,
     serviceAccounts,

@@ -674,6 +674,8 @@ Google has **no official public API for creating arbitrary OAuth clients.** Like
 
 When it fails, `seedProject` does **not** throw; it records a warning and gives you a direct console link to finish the consent screen by hand. Service-account keys have no such limitation and work everywhere.
 
+Preflight catches this up front: with `--oauth-client` and no `--parent`, the `oauth-org` check warns and names the org(s) you can see, and the interactive wizard offers to create the project under one.
+
 To recover without re-seeding (no new project, no extra quota), move the project into your org, then retry just the OAuth step:
 
 ```sh
