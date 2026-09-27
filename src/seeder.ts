@@ -81,7 +81,7 @@ async function createProject(
   labels: Record<string, string>,
   reconcile: boolean,
   log: (m: string) => void,
-): Promise<string> {
+): Promise<{ projectNumber: string; parent: string | undefined }> {
   const crm = google.cloudresourcemanager({ version: 'v3', auth: auth as never });
   log(`Creating project "${projectId}"…`);
   let create;
@@ -95,7 +95,8 @@ async function createProject(
       const { data } = await crm.projects.get({ name: `projects/${projectId}` });
       const projectNumber = (data.name ?? '').split('/')[1] ?? '';
       log(`✓ Project "${projectId}" already exists — reusing it (number ${projectNumber || 'unknown'})`);
-      return projectNumber;
+      // An adopted project keeps whatever parent it already has.
+      return { projectNumber, parent: data.parent || undefined };
     }
     throw err;
   }
@@ -107,7 +108,7 @@ async function createProject(
   const projectResource = done.response as { name?: string } | undefined;
   const projectNumber = projectResource?.name?.split('/')[1] ?? '';
   log(`✓ Project created (number ${projectNumber || 'unknown'})`);
-  return projectNumber;
+  return { projectNumber, parent };
 }
 
 async function enableApis(
@@ -345,7 +346,7 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
   const labels = buildSeedLabels({ ttl: options.ttl });
   const reconcile = options.reconcile === true;
 
-  const projectNumber = await createProject(auth, projectId, displayName, options.parent, labels, reconcile, log);
+  const { projectNumber, parent: projectParent } = await createProject(auth, projectId, displayName, options.parent, labels, reconcile, log);
 
   // Link billing BEFORE enabling APIs: most non-Workspace services refuse to
   // enable on an unbilled project, and API-created projects start unbilled.
@@ -534,7 +535,7 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
         options.consentScreenTitle ?? displayName,
         options.supportEmail!,
         outputDir,
-        options.parent,
+        projectParent,
         log,
       );
     } catch (err) {
