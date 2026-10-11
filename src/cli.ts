@@ -702,7 +702,18 @@ async function resolveBillingForCli(
   json: boolean,
 ): Promise<string | undefined> {
   const auth = await resolveAuth();
-  const { account, candidates } = await resolveBillingAccount(auth, requested);
+  let resolved;
+  try {
+    resolved = await resolveBillingAccount(auth, requested);
+  } catch (err) {
+    // An explicit --billing-account must resolve. Auto-discovery is best-effort:
+    // if billing can't be read (e.g. the Cloud Billing API is off in the quota
+    // project), continue unbilled — same as preflight's `skip`.
+    if (requested) throw err;
+    if (!json) console.warn(`⚠ Could not look up billing accounts (${(err as Error).message.split('\n')[0]}). Project will be unbilled.`);
+    return undefined;
+  }
+  const { account, candidates } = resolved;
   if (account) return account;
   if (candidates.length > 1 && interactive) {
     return select({

@@ -147,8 +147,11 @@ export function explainGoogleError(err: unknown, ctx: ExplainGoogleErrorContext 
     };
   }
 
-  // 3. Billing permission (403, mentions billing).
-  if ((code === 403 || /permission_denied/i.test(msg)) && /billing/i.test(msg)) {
+  const apiDisabled = /has not been used in project/i.test(msg) || /or it is disabled/i.test(msg);
+
+  // 3. Billing permission (403, mentions billing). A disabled Cloud Billing API
+  //    also says "billing" — that's case 4, not a permission problem.
+  if ((code === 403 || /permission_denied/i.test(msg)) && /billing/i.test(msg) && !apiDisabled) {
     const acct = ctx.billingAccount ?? 'the billing account';
     return {
       kind: 'billing-permission',
@@ -160,8 +163,9 @@ export function explainGoogleError(err: unknown, ctx: ExplainGoogleErrorContext 
 
   // 4. "API not ready" 403 — also the classic quota-project confusion: the message
   //    names the credentials' quota project, not necessarily the target project.
-  if (/has not been used in project/i.test(msg) || /or it is disabled/i.test(msg)) {
+  if (apiDisabled) {
     const projectNumber = extractProjectNumber(msg);
+    const api = msg.match(/\/apis\/api\/([a-z0-9.-]+\.googleapis\.com)/i)?.[1];
     const targetMismatch = Boolean(
       projectNumber && ctx.projectId && projectNumber !== ctx.projectId,
     );
@@ -176,7 +180,10 @@ export function explainGoogleError(err: unknown, ctx: ExplainGoogleErrorContext 
     return {
       kind: 'api-not-ready',
       headline: `The API isn't usable yet for project ${projectNumber ?? '(unknown)'} — enabling can take a few minutes to propagate.`,
-      fix: "Wait a minute or two and retry. gcp-seeder's readiness polling handles this automatically during seed; if you're calling the API directly, add a short retry loop.",
+      fix:
+        "If it was just enabled, wait a minute or two and retry (seed's readiness polling does this automatically). " +
+        `Otherwise enable it: gcloud services enable ${api ?? '<api>'} --project ${projectNumber ?? '<project>'}` +
+        " — if that isn't your target project, it's your credentials' quota project.",
       original,
     };
   }
