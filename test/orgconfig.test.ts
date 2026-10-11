@@ -11,7 +11,7 @@ const full: OrgConfig = parseOrgConfig({
   budget: { defaultUsd: 50, maxUsd: 500 },
   ttl: { default: '30d', max: '90d', allowNone: false },
   labels: { required: ['owner', 'cost-center'] },
-  owner: { required: true },
+  owner: { required: true, domain: 'example.com' },
   harden: true,
   keys: 'forbid',
   apis: { denied: ['compute.googleapis.com'] },
@@ -21,6 +21,14 @@ test('encodeOwnerLabel produces a valid, readable label value', () => {
   assert.equal(encodeOwnerLabel('Jane.Doe@Example.com'), 'jane-doe_at_example-com');
   assert.equal(encodeOwnerLabel('ops+gcp@example.co.uk'), 'ops-gcp_at_example-co-uk');
   assert.match(encodeOwnerLabel('a.b@example.com'), LABEL_RE);
+});
+
+test('encodeOwnerLabel drops a matching home domain but keeps other domains distinct', () => {
+  assert.equal(encodeOwnerLabel('Jane.Doe@Example.com', 'example.com'), 'jane-doe');
+  assert.equal(encodeOwnerLabel('jane@agency.example', 'example.com'), 'jane_at_agency-example');
+  assert.notEqual(encodeOwnerLabel('jane@example.com', 'example.com'), encodeOwnerLabel('jane@agency.example', 'example.com'));
+  assert.equal(encodeOwnerLabel('ci@proj.iam.gserviceaccount.com', 'example.com'), 'ci_at_proj-iam-gserviceaccount-com');
+  assert.equal(encodeOwnerLabel('jane@sub.example.com', 'example.com'), 'jane_at_sub-example-com', 'subdomains are not the home domain');
 });
 
 test('encodeOwnerLabel truncates long addresses to 63 chars with a stable, distinct hash', () => {
@@ -39,6 +47,7 @@ test('parseOrgConfig rejects unknown keys, bad parents and inconsistent defaults
   assert.throws(() => parseOrgConfig({ version: 1, ttl: { default: '120d', max: '90d' } }), /ttl.default must not exceed/);
   assert.throws(() => parseOrgConfig({ version: 1, ttl: { max: '3 months' } }), /duration/);
   assert.throws(() => parseOrgConfig({ version: 2 }), /version/);
+  assert.throws(() => parseOrgConfig({ version: 1, owner: { domain: '@example.com' } }), /domain like/);
 });
 
 test('empty policy (version only) imposes nothing and changes nothing', () => {
@@ -56,7 +65,7 @@ test('a compliant request gets defaults filled in and no violations', () => {
   assert.equal(resolved.budgetUsd, 50);
   assert.equal(resolved.ttl, '30d');
   assert.equal(resolved.harden, true);
-  assert.equal(resolved.labels?.owner, 'jane_at_example-com');
+  assert.equal(resolved.labels?.owner, 'jane', 'home-domain owner is labelled by local part');
 });
 
 test('narrow-only: tightening is allowed, loosening is a violation per rule', () => {

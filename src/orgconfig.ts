@@ -40,7 +40,14 @@ export const OrgConfigSchema = z
       .refine((t) => !t.default || !t.max || parseDuration(t.default) <= parseDuration(t.max), 'ttl.default must not exceed ttl.max')
       .optional(),
     labels: z.object({ required: z.array(z.string()).optional() }).strict().optional(),
-    owner: z.object({ required: z.boolean().optional() }).strict().optional(),
+    owner: z
+      .object({
+        required: z.boolean().optional(),
+        /** Home domain: owners in it are labelled by local part only (jane@example.com → jane). */
+        domain: z.string().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/i, 'must be a domain like example.com').optional(),
+      })
+      .strict()
+      .optional(),
     harden: z.boolean().optional(),
     keys: z.enum(['allow', 'forbid']).optional(),
     apis: z.object({ denied: z.array(z.string()).optional() }).strict().optional(),
@@ -67,12 +74,17 @@ export function parseOrgConfig(data: unknown, source = 'org config'): OrgConfig 
 /**
  * Encode an email as a GCP label value (`[a-z0-9_-]`, ≤63 chars). One-way by
  * design — `@` becomes `_at_`, any other disallowed char becomes `-`, and
- * over-long values are truncated with a short hash so they stay unique. The
+ * over-long values are truncated with a short hash so they stay unique. When
+ * `homeDomain` matches, only the local part is kept (jane@example.com → jane);
+ * other domains keep the suffix so they can't collide with home users. The
  * real address lives in Essential Contacts; never parse it back out of this.
  */
-export function encodeOwnerLabel(email: string): string {
+export function encodeOwnerLabel(email: string, homeDomain?: string): string {
   const normalized = email.trim().toLowerCase();
-  const encoded = normalized.replace('@', '_at_').replace(/[^a-z0-9_-]/g, '-');
+  const at = normalized.lastIndexOf('@');
+  const isHome = Boolean(homeDomain) && at > 0 && normalized.slice(at + 1) === homeDomain!.toLowerCase();
+  const raw = isHome ? normalized.slice(0, at) : normalized.replace('@', '_at_');
+  const encoded = raw.replace(/[^a-z0-9_-]/g, '-');
   if (encoded.length <= 63) return encoded;
   const hash = createHash('sha256').update(normalized).digest('hex').slice(0, 8);
   return `${encoded.slice(0, 54)}-${hash}`;
@@ -161,7 +173,7 @@ export function applyOrgPolicy(config: OrgConfig, req: PolicyRequest): { resolve
   }
 
   // owner + labels
-  if (resolved.owner) resolved.labels!.owner = encodeOwnerLabel(resolved.owner);
+  if (resolved.owner) resolved.labels!.owner = encodeOwnerLabel(resolved.owner, config.owner?.domain);
   else if (config.owner?.required) {
     v('owner.required', 'Org policy requires an owner.', 'Pass --owner <email>.');
   }
