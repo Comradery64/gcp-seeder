@@ -2,6 +2,7 @@ import test, { mock, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { google } from 'googleapis';
 import { destroyProjects } from '../src/destroy.js';
+import { drainUntilSettled } from './helpers.js';
 
 // A fake IAM client: one SA holding one user-managed key.
 function fakeIam(keyDelete: ReturnType<typeof mock.fn>) {
@@ -330,10 +331,7 @@ test('--empty deletes user-managed SAs, the gcp-seeder budget and non-bootstrap 
   }) as never);
 
   const promise = destroyProjects({ projectIds: ['seed-test-x'], apply: true, empty: true, auth: {} as never });
-  for (let i = 0; i < 20; i++) {
-    mock.timers.runAll();
-    await new Promise((r) => setImmediate(r));
-  }
+  await drainUntilSettled(promise);
   const res = await promise;
 
   assert.equal(projDelete.mock.callCount(), 0, '--empty must never delete the project');
