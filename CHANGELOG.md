@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.0](https://github.com/Comradery64/gcp-seeder/compare/v0.5.0...v0.6.0) (2026-10-11)
+
+
+### Features
+
+* add move (attach-org) command to put a project under an org or folder ([35545e3](https://github.com/Comradery64/gcp-seeder/commit/35545e30bccd78e07e1e539ca86b5d4f81fe5a63))
+* move command, oauth-org preflight, billing fix ([fa26323](https://github.com/Comradery64/gcp-seeder/commit/fa26323776e552716d9038af976939dbe87c3473))
+* preflight warns when an OAuth client is planned without an org parent ([53a086c](https://github.com/Comradery64/gcp-seeder/commit/53a086ca7f69c7a921ee55033c1f54aff15628e5))
+
+
+### Bug Fixes
+
+* don't abort seed when billing can't be auto-discovered ([7f9aeaf](https://github.com/Comradery64/gcp-seeder/commit/7f9aeafd875a987f48ac2b907301527d76da40c5))
+
 ## [0.5.0](https://github.com/Comradery64/gcp-seeder/compare/v0.4.1...v0.5.0) (2026-09-27)
 
 
