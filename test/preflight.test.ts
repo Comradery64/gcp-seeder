@@ -95,7 +95,7 @@ test('all-pass baseline: every check reports pass or skip, report is ok', async 
   const r = await preflight({ auth: {} as never });
 
   assert.equal(r.ok, true);
-  assert.equal(r.checks.length, 7);
+  assert.equal(r.checks.length, 8);
   assert.ok(!r.checks.some((c) => c.status === 'fail'));
   assert.equal(findCheck(r.checks, 'auth').status, 'pass');
   assert.match(findCheck(r.checks, 'auth').detail, /me@example\.com/);
@@ -122,7 +122,7 @@ test('preflight() never throws when resolveAuth itself fails; auth is a FAIL and
   // No auth injected and ADC is blocked by test/setup.ts, so resolveAuth rejects.
   // "Nothing could be checked" must not read as ok:true to a CI/agent consumer.
   const r = await preflight({});
-  assert.equal(r.checks.length, 7);
+  assert.equal(r.checks.length, 8);
   const auth = r.checks.find((c) => c.id === 'auth')!;
   assert.equal(auth.status, 'fail');
   assert.match(auth.fix ?? '', /gcp-seeder init/);
@@ -414,4 +414,56 @@ test('billing: warn when the account is at the default projects-per-billing-acco
   assert.match(check.detail, /already has 5 linked project/);
   assert.match(check.fix ?? '', /0114D0-E45B05-2951AC\/manage/);
   assert.equal(r.ok, true, 'a warn does not block');
+});
+
+function crmWithOrgs(orgs: Array<{ name: string; displayName?: string; state?: string }> | Error) {
+  return {
+    projects: { search: async () => ({ data: { projects: [] } }) },
+    folders: { testIamPermissions: async () => ({ data: { permissions: ['resourcemanager.projects.create'] } }) },
+    organizations: {
+      testIamPermissions: async () => ({ data: { permissions: ['resourcemanager.projects.create'] } }),
+      search: async () => {
+        if (orgs instanceof Error) throw orgs;
+        return { data: { organizations: orgs } };
+      },
+    },
+  };
+}
+
+test('oauth-org: skips when no OAuth client is planned', async () => {
+  baseMocks({ crm: crmWithOrgs([{ name: 'organizations/123456789' }]) });
+  const r = await preflight({ auth: {} as never });
+  assert.equal(findCheck(r.checks, 'oauth-org').status, 'skip');
+});
+
+test('oauth-org: passes when a parent is given', async () => {
+  baseMocks({ crm: crmWithOrgs([]) });
+  const r = await preflight({ auth: {} as never, wantsOAuthClient: true, parent: 'organizations/123456789' });
+  assert.equal(findCheck(r.checks, 'oauth-org').status, 'pass');
+});
+
+test('oauth-org: warns and names the visible org when --parent is missing', async () => {
+  baseMocks({ crm: crmWithOrgs([{ name: 'organizations/123456789', displayName: 'example.com' }, { name: 'organizations/1', state: 'DELETE_REQUESTED' }]) });
+  const r = await preflight({ auth: {} as never, wantsOAuthClient: true });
+  const c = findCheck(r.checks, 'oauth-org') as { status: string; detail: string; fix?: string };
+  assert.equal(c.status, 'warn');
+  assert.match(c.detail, /organizations\/123456789 \(example\.com\)/);
+  assert.doesNotMatch(c.detail, /organizations\/1[^0-9]/, 'deleted orgs are not offered');
+  assert.match(c.fix ?? '', /--parent organizations\/123456789/);
+  assert.equal(r.ok, true, 'a warning does not block the run');
+});
+
+test('oauth-org: warns (personal-account wording) when no org is visible', async () => {
+  baseMocks({ crm: crmWithOrgs([]) });
+  const r = await preflight({ auth: {} as never, wantsOAuthClient: true });
+  const c = findCheck(r.checks, 'oauth-org');
+  assert.equal(c.status, 'warn');
+  assert.match((c as { detail: string }).detail, /no Cloud organization visible/);
+});
+
+test('oauth-org: skips (not fails) when organizations cannot be listed', async () => {
+  baseMocks({ crm: crmWithOrgs(new Error('permission denied')) });
+  const r = await preflight({ auth: {} as never, wantsOAuthClient: true });
+  assert.equal(findCheck(r.checks, 'oauth-org').status, 'skip');
+  assert.equal(r.ok, true);
 });

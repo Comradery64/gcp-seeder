@@ -53,7 +53,7 @@ test('waitForServicesEnabled returns once every API reports ENABLED', async () =
   });
   for (let i = 0; i < 20; i++) {
     mock.timers.runAll();
-    await Promise.resolve();
+    await new Promise((r) => setImmediate(r));
   }
   await promise;
   assert.ok(get.mock.callCount() >= 2);
@@ -72,7 +72,7 @@ test('waitForServicesEnabled throws on timeout, naming the still-not-ENABLED API
   const assertion = assert.rejects(promise, /serviceusage\.googleapis\.com/);
   for (let i = 0; i < 20; i++) {
     mock.timers.runAll();
-    await Promise.resolve();
+    await new Promise((r) => setImmediate(r));
   }
   await assertion;
 });
@@ -115,7 +115,7 @@ test('probeApisReady reports timeout when the readiness 403 persists', async () 
   });
   for (let i = 0; i < 20; i++) {
     mock.timers.runAll();
-    await Promise.resolve();
+    await new Promise((r) => setImmediate(r));
   }
   const results = await promise;
   assert.deepEqual(results, [{ api: 'cloudresourcemanager.googleapis.com', status: 'timeout' }]);
@@ -133,7 +133,7 @@ test('withApiReadyRetry retries while not-ready, then succeeds', async () => {
   const promise = withApiReadyRetry(fn, { attempts: 5, intervalMs: 1_000, log: () => {} });
   for (let i = 0; i < 20; i++) {
     mock.timers.runAll();
-    await Promise.resolve();
+    await new Promise((r) => setImmediate(r));
   }
   const result = await promise;
   assert.equal(result, 'ok');

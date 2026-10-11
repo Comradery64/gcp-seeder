@@ -651,7 +651,7 @@ console.log(result.projectId, result.serviceAccount?.keyFile);
 
 ## What gets created
 
-> **Verified live (2026-09-26)** against a Google Workspace org: `--preset ai --service-account --billing-account … --budget 5 --harden --ttl 1d` completed end to end and was checked independently via the APIs (billing linked, only `roles/aiplatform.user` bound to the SA, default network gone, budget present), then `audit` found it and `destroy --apply` removed it. Key creation was blocked by the org's `iam.disableServiceAccountKeyCreation` policy and surfaced as a warning, as designed. `--wif` was not part of that run. Details in `docs/PLAN-v0.5.md`.
+> **Verified live (2026-09-26)** against a Google Workspace org: `--preset ai --service-account --billing-account … --budget 5 --harden --ttl 1d` completed end to end and was checked independently via the APIs (billing linked, only `roles/aiplatform.user` bound to the SA, default network gone, budget present), then `audit` found it and `destroy --apply` removed it. Key creation was blocked by the org's `iam.disableServiceAccountKeyCreation` policy and surfaced as a warning, as designed. `--wif` was not part of that run.
 
 1. **A new GCP project** with a unique id (polls the create operation to completion).
 2. **Billing account linked** (if resolved — see [Billing](#billing)), before any APIs are enabled.
@@ -674,11 +674,17 @@ Google has **no official public API for creating arbitrary OAuth clients.** Like
 
 When it fails, `seedProject` does **not** throw; it records a warning and gives you a direct console link to finish the consent screen by hand. Service-account keys have no such limitation and work everywhere.
 
-To retry just the OAuth step on the project you already have (no new project, no extra quota) — e.g. after moving it into your org with `gcloud projects move <id> --organization <org-id>`:
+Preflight catches this up front: with `--oauth-client` and no `--parent`, the `oauth-org` check warns and names the org(s) you can see, and the interactive wizard offers to create the project under one.
+
+To recover without re-seeding (no new project, no extra quota), move the project into your org, then retry just the OAuth step:
 
 ```sh
+npx gcp-seeder move --project seed-xxxx --organization 123456789012            # dry-run: shows from → to + permission check
+npx gcp-seeder move --project seed-xxxx --organization 123456789012 --apply    # or --folder <id>
 npx gcp-seeder oauth-client --project seed-xxxx --support-email you@example.com
 ```
+
+`move` (alias `attach-org`) is dry-run by default, checks you hold `resourcemanager.projects.move` on the project and the destination (`roles/resourcemanager.projectMover`), and is a no-op if the project is already there. A moved project inherits the destination's IAM and org policies — prefer a dedicated folder over the org root.
 
 It reads the project's real parent, enables `iap.googleapis.com` if needed, and writes `client_secret.json` to `--output-dir`. It refuses to overwrite an existing `client_secret.json`, and each successful run creates a new client.
 

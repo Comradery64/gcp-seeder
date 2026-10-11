@@ -27,6 +27,8 @@ export interface PreflightOptions {
   apis?: string[];
   /** Whether the plan includes minting a downloadable SA key (drives the key-creation org-policy check). */
   wantsServiceAccountKey?: boolean;
+  /** Whether the plan includes an OAuth client (drives the oauth-org check). */
+  wantsOAuthClient?: boolean;
   /** Pre-authorized cloud-platform auth client. Falls back to ADC. */
   auth?: AuthClient;
   /** Receives progress lines. Default: no-op. */
@@ -56,7 +58,7 @@ export const BILLING_REQUIRED_APIS = new Set<string>([
   'generativelanguage.googleapis.com',
 ]);
 
-const ALL_CHECK_IDS = ['auth', 'project-id', 'quota', 'parent', 'billing', 'org-policy', 'bootstrap-apis'];
+const ALL_CHECK_IDS = ['auth', 'project-id', 'quota', 'parent', 'billing', 'org-policy', 'bootstrap-apis', 'oauth-org'];
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -346,6 +348,45 @@ async function checkBootstrapApis(auth: AuthClient): Promise<PreflightCheck> {
  * `resolveAuth` in a way that isn't a credentials problem at all).
  */
 /** Google's default projects-per-billing-account quota. */
+/** Organizations the caller can see, as { name: "organizations/<id>", displayName }. */
+export async function findAccessibleOrganizations(auth: AuthClient): Promise<{ name: string; displayName?: string }[]> {
+  const crm = google.cloudresourcemanager({ version: 'v3', auth: auth as never });
+  const { data } = await crm.organizations.search({});
+  return (data.organizations ?? [])
+    .filter((o) => o.name && o.state !== 'DELETE_REQUESTED')
+    .map((o) => ({ name: o.name!, displayName: o.displayName ?? undefined }));
+}
+
+/**
+ * 8. oauth-org — an Internal OAuth consent screen needs the *project* inside a
+ * Cloud organization; a Workspace login alone isn't enough. Warn before
+ * creating an org-less project that asks for an OAuth client.
+ */
+async function checkOAuthOrg(auth: AuthClient, parent: string | undefined, wantsOAuthClient: boolean): Promise<PreflightCheck> {
+  if (!wantsOAuthClient) return { id: 'oauth-org', status: 'skip', detail: 'No OAuth client requested.' };
+  if (parent) return { id: 'oauth-org', status: 'pass', detail: `Project will be created under ${parent}.` };
+  try {
+    const orgs = await findAccessibleOrganizations(auth);
+    if (orgs.length === 0) {
+      return {
+        id: 'oauth-org',
+        status: 'warn',
+        detail: 'No --parent and no Cloud organization visible to you: automatic OAuth client creation will likely fail.',
+        fix: 'Personal accounts must finish the consent screen in the console; Workspace users should seed with --parent organizations/<id>.',
+      };
+    }
+    const list = orgs.map((o) => `${o.name}${o.displayName ? ` (${o.displayName})` : ''}`).join(', ');
+    return {
+      id: 'oauth-org',
+      status: 'warn',
+      detail: `No --parent, so the project will be org-less and can't get an Internal consent screen. Visible org(s): ${list}.`,
+      fix: `Re-run with --parent ${orgs[0]!.name} (or a folder under it).`,
+    };
+  } catch (err) {
+    return { id: 'oauth-org', status: 'skip', detail: `Could not list organizations: ${errMsg(err)}` };
+  }
+}
+
 export const DEFAULT_PROJECTS_PER_BILLING_ACCOUNT = 5;
 
 export async function preflight(options: PreflightOptions = {}): Promise<PreflightReport> {
@@ -378,6 +419,7 @@ export async function preflight(options: PreflightOptions = {}): Promise<Preflig
     checkBilling(auth, options.billingAccount, apis),
     checkOrgPolicy(auth, options.parent, options.wantsServiceAccountKey ?? false, apis),
     checkBootstrapApis(auth),
+    checkOAuthOrg(auth, options.parent, options.wantsOAuthClient ?? false),
   ]);
 
   return { checks, ok: !checks.some((c) => c.status === 'fail') };

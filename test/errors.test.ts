@@ -220,3 +220,16 @@ test('billing-quota: recognizes the message src/billing.ts already rewrote and e
   assert.match(e.headline, /0114D0-E45B05-2951AC/);
   assert.doesNotMatch(e.headline, /~30 projects/);
 });
+
+test('disabled Cloud Billing API is api-not-ready (with the enable command), not a billing permission problem', () => {
+  const err = Object.assign(
+    new Error(
+      'Cloud Billing API has not been used in project 111111111111 before or it is disabled. Enable it by visiting ' +
+        'https://console.developers.google.com/apis/api/cloudbilling.googleapis.com/overview?project=111111111111 then retry.',
+    ),
+    { code: 403 },
+  );
+  const e = explainGoogleError(err);
+  assert.equal(e.kind, 'api-not-ready');
+  assert.match(e.fix ?? '', /gcloud services enable cloudbilling\.googleapis\.com --project 111111111111/);
+});

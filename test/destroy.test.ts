@@ -332,7 +332,7 @@ test('--empty deletes user-managed SAs, the gcp-seeder budget and non-bootstrap 
   const promise = destroyProjects({ projectIds: ['seed-test-x'], apply: true, empty: true, auth: {} as never });
   for (let i = 0; i < 20; i++) {
     mock.timers.runAll();
-    await Promise.resolve();
+    await new Promise((r) => setImmediate(r));
   }
   const res = await promise;
 

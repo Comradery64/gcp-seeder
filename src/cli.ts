@@ -9,13 +9,14 @@ import { findGcloud, hasAdc, installGcloud, runAdcLogin } from './gcloud.js';
 import { createProjectOAuthClient, generateProjectId, seedProject } from './seeder.js';
 import { sweepProjects } from './sweep.js';
 import { rotateServiceAccountKey } from './rotate.js';
+import { moveProject } from './move.js';
 import { parseWifTarget } from './wif.js';
 import { exportProjectTerraform } from './export.js';
 import { explainGoogleError, formatExplainedError } from './errors.js';
 import { resolveBillingAccount } from './billing.js';
 import { PRESET_ROLES, validateRoles } from './roles.js';
 import { resolveAuth } from './auth.js';
-import { preflight } from './preflight.js';
+import { findAccessibleOrganizations, preflight } from './preflight.js';
 import type { PreflightReport } from './preflight.js';
 import { loadManifest, manifestToSeedOptions } from './manifest.js';
 import { VERSION } from './version.js';
@@ -70,8 +71,9 @@ program
   .option('--apis <list>', 'Comma-separated APIs you intend to enable')
   .option('--preset <name>', `Preset whose APIs you intend to enable: ${ALL_PRESETS.join(', ')}`)
   .option('--service-account', 'Plan includes a downloadable SA key (checks the key-creation org policy)')
+  .option('--oauth-client', 'Plan includes an OAuth client (checks the project will be inside an org)')
   .option('--json', 'Emit the PreflightReport as JSON')
-  .action(async (opts: { projectId?: string; parent?: string; billingAccount?: string; apis?: string; preset?: string; serviceAccount?: boolean; json?: boolean }) => {
+  .action(async (opts: { projectId?: string; parent?: string; billingAccount?: string; apis?: string; preset?: string; serviceAccount?: boolean; oauthClient?: boolean; json?: boolean }) => {
     const apis = opts.apis
       ? opts.apis.split(',').map((s) => s.trim()).filter(Boolean)
       : opts.preset
@@ -83,6 +85,7 @@ program
       billingAccount: opts.billingAccount,
       apis,
       wantsServiceAccountKey: Boolean(opts.serviceAccount) || Boolean(PROVISIONING_PRESETS[opts.preset ?? '']),
+      wantsOAuthClient: Boolean(opts.oauthClient),
       logger: opts.json ? undefined : log,
     });
     if (opts.json) {
@@ -300,6 +303,45 @@ program
   });
 
 program
+  .command('move')
+  .alias('attach-org')
+  .description('Move a project under an organization or folder (e.g. to allow an Internal OAuth consent screen). Dry-run by default.')
+  .requiredOption('--project <id>', 'Project to move')
+  .option('--organization <id>', 'Destination organization id')
+  .option('--folder <id>', 'Destination folder id')
+  .option('--apply', 'Actually move the project (default is a dry-run)')
+  .option('--json', 'Emit the result as JSON (implies --yes; suppresses progress output)')
+  .option('-y, --yes', 'Skip the interactive confirmation (for scripts)')
+  .action(async (opts: { project: string; organization?: string; folder?: string; apply?: boolean; json?: boolean; yes?: boolean }) => {
+    if (Boolean(opts.organization) === Boolean(opts.folder)) {
+      console.error('Pass exactly one of --organization <id> or --folder <id>.');
+      process.exitCode = 1;
+      return;
+    }
+    const destination = opts.organization ? `organizations/${opts.organization}` : `folders/${opts.folder}`;
+    const json = Boolean(opts.json);
+    const logger = json ? undefined : log;
+    const plan = await moveProject({ projectId: opts.project, destination, apply: false, logger });
+    if (!opts.apply || plan.alreadyThere) {
+      if (json) console.log(JSON.stringify(plan, null, 2));
+      else if (!plan.alreadyThere) console.log('\nDry-run only. Re-run with --apply to move.');
+      return;
+    }
+    if (!opts.yes && !json) {
+      const ok = await confirm({
+        message: `Move ${opts.project} from ${plan.from ?? '(no parent)'} to ${destination}? It will inherit that parent's IAM and org policies.`,
+        default: false,
+      });
+      if (!ok) {
+        console.log('Aborted.');
+        return;
+      }
+    }
+    const result = await moveProject({ projectId: opts.project, destination, apply: true, logger });
+    if (json) console.log(JSON.stringify(result, null, 2));
+  });
+
+program
   .command('oauth-client')
   .description('Create an OAuth client + consent screen on an existing project (retry for a failed seed --oauth-client).')
   .requiredOption('--project <id>', 'Existing project to add the OAuth client to')
@@ -493,13 +535,30 @@ async function run(opts: CliOptions): Promise<void> {
 
   // Preflight: catch quota / billing / org-policy / burned-id problems before
   // anything exists. A `fail` stops the run; warn/skip are printed and continue.
+  // An OAuth client needs the project inside an org for an Internal consent
+  // screen. In the wizard, offer the org(s) the caller can see.
+  let parent = opts.parent;
+  if (interactive && credentials.oauthClient && !parent) {
+    const orgs = await findAccessibleOrganizations(await resolveAuth()).catch(() => []);
+    if (orgs.length) {
+      parent = await select({
+        message: 'No --parent given. An OAuth client needs the project inside an org. Create it under:',
+        choices: [
+          ...orgs.map((o) => ({ name: `${o.displayName ?? o.name} (${o.name})`, value: o.name as string | undefined })),
+          { name: 'No parent (OAuth client will likely need finishing in the console)', value: undefined },
+        ],
+      });
+    }
+  }
+
   if (!opts.skipPreflight) {
     const report = await preflight({
       projectId,
-      parent: opts.parent,
+      parent,
       billingAccount,
       apis,
       wantsServiceAccountKey: credentials.serviceAccount || serviceAccounts.length > 0,
+      wantsOAuthClient: credentials.oauthClient,
       logger: json ? undefined : undefined,
     });
     if (!json) printPreflightReport(report);
@@ -545,7 +604,7 @@ async function run(opts: CliOptions): Promise<void> {
   const result = await seedProject({
     projectId,
     displayName: opts.name,
-    parent: opts.parent,
+    parent,
     apis,
     credentials,
     serviceAccounts,
@@ -643,7 +702,18 @@ async function resolveBillingForCli(
   json: boolean,
 ): Promise<string | undefined> {
   const auth = await resolveAuth();
-  const { account, candidates } = await resolveBillingAccount(auth, requested);
+  let resolved;
+  try {
+    resolved = await resolveBillingAccount(auth, requested);
+  } catch (err) {
+    // An explicit --billing-account must resolve. Auto-discovery is best-effort:
+    // if billing can't be read (e.g. the Cloud Billing API is off in the quota
+    // project), continue unbilled — same as preflight's `skip`.
+    if (requested) throw err;
+    if (!json) console.warn(`⚠ Could not look up billing accounts (${(err as Error).message.split('\n')[0]}). Project will be unbilled.`);
+    return undefined;
+  }
+  const { account, candidates } = resolved;
   if (account) return account;
   if (candidates.length > 1 && interactive) {
     return select({
