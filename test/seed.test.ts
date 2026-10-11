@@ -62,7 +62,7 @@ test('happy path: creates the project and enables the requested APIs', async () 
   // release the internal `await sleep(...)` calls as they get scheduled
   for (let i = 0; i < 60; i++) {
     mock.timers.runAll();
-    await Promise.resolve();
+    await new Promise((r) => setImmediate(r));
   }
   const res = await promise;
 
@@ -109,7 +109,7 @@ test('creates multiple named service accounts and surfaces DWD grants', async ()
     });
     for (let i = 0; i < 60; i++) {
       mock.timers.runAll();
-      await Promise.resolve();
+      await new Promise((r) => setImmediate(r));
     }
     const res = await promise;
 
@@ -157,7 +157,7 @@ test('org policy blocking SA key creation warns instead of throwing', async () =
   });
   for (let i = 0; i < 60; i++) {
     mock.timers.runAll();
-    await Promise.resolve();
+    await new Promise((r) => setImmediate(r));
   }
   const res = await promise; // must NOT throw
 
@@ -204,7 +204,7 @@ for (const [parent, expected, absent] of [
     });
     for (let i = 0; i < 60; i++) {
       mock.timers.runAll();
-      await Promise.resolve();
+      await new Promise((r) => setImmediate(r));
     }
     const res = await promise;
     assert.equal(res.oauthClient, undefined);

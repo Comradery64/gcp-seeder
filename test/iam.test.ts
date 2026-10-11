@@ -72,7 +72,7 @@ test('modifyProjectIamPolicy retries on an etag conflict and re-reads before the
   });
   mock.method(google, 'cloudresourcemanager', () => ({ projects: { getIamPolicy, setIamPolicy } }) as never);
   const p = modifyProjectIamPolicy({} as never, 'p1', (pol) => ({ ...pol, bindings: [{ role: 'r', members: ['m'] }] }));
-  for (let i = 0; i < 10; i++) { mock.timers.runAll(); await Promise.resolve(); }
+  for (let i = 0; i < 10; i++) { mock.timers.runAll(); await new Promise((r) => setImmediate(r)); }
   const res = await p;
   assert.equal(res.changed, true);
   assert.equal(getIamPolicy.mock.callCount(), 2);
