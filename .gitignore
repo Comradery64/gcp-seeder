@@ -13,3 +13,8 @@ credentials/
 .env.local
 .frugal-fable/
 PLAN.md
+
+# Agent planning/orchestration notes stay local (public repo)
+docs/PLAN-*.md
+docs/ORCHESTRATION*.md
+CLAUDE.local.md

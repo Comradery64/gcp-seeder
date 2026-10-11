@@ -651,7 +651,7 @@ console.log(result.projectId, result.serviceAccount?.keyFile);
 
 ## What gets created
 
-> **Verified live (2026-09-26)** against a Google Workspace org: `--preset ai --service-account --billing-account … --budget 5 --harden --ttl 1d` completed end to end and was checked independently via the APIs (billing linked, only `roles/aiplatform.user` bound to the SA, default network gone, budget present), then `audit` found it and `destroy --apply` removed it. Key creation was blocked by the org's `iam.disableServiceAccountKeyCreation` policy and surfaced as a warning, as designed. `--wif` was not part of that run. Details in `docs/PLAN-v0.5.md`.
+> **Verified live (2026-09-26)** against a Google Workspace org: `--preset ai --service-account --billing-account … --budget 5 --harden --ttl 1d` completed end to end and was checked independently via the APIs (billing linked, only `roles/aiplatform.user` bound to the SA, default network gone, budget present), then `audit` found it and `destroy --apply` removed it. Key creation was blocked by the org's `iam.disableServiceAccountKeyCreation` policy and surfaced as a warning, as designed. `--wif` was not part of that run.
 
 1. **A new GCP project** with a unique id (polls the create operation to completion).
 2. **Billing account linked** (if resolved — see [Billing](#billing)), before any APIs are enabled.

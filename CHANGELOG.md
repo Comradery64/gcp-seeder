@@ -12,7 +12,7 @@
 * explain Google errors (quota, org policy, billing, quota project, liens) ([2a57431](https://github.com/Comradery64/gcp-seeder/commit/2a57431c3f9d60a8c16ce0311e04d6eb880e2f2d))
 * harden project defaults (delete default network, demote default compute SA) ([f20722f](https://github.com/Comradery64/gcp-seeder/commit/f20722f00fde547ed7b32c4b0c3f51a642a2dd50))
 * least-privilege service-account role grants (roles module) ([e301cd1](https://github.com/Comradery64/gcp-seeder/commit/e301cd15dc2cd0389477eda7bc19f4d99a1253f9))
-* project IAM read-modify-write primitive + v0.5 plan and orchestration docs ([100186f](https://github.com/Comradery64/gcp-seeder/commit/100186f3962d5ff9a5673ce584afde3ac67ee780))
+* project IAM read-modify-write primitive ([100186f](https://github.com/Comradery64/gcp-seeder/commit/100186f3962d5ff9a5673ce584afde3ac67ee780))
 * read-only preflight checks (auth, id, quota, parent, billing, org policy, bootstrap APIs) ([a2cbd4f](https://github.com/Comradery64/gcp-seeder/commit/a2cbd4fd92d136fbf9ebf3f5713ccebf39a6b9b2))
 * render explained Google errors in the CLI and MCP server ([ac9cf2b](https://github.com/Comradery64/gcp-seeder/commit/ac9cf2babd55685c5cd4820c6e3adbc7c62aa449))
 * v0.5 bootstrap hardening + oauth-client retry ([120c1dc](https://github.com/Comradery64/gcp-seeder/commit/120c1dc52500b463723412d73c76259e3cac448e))

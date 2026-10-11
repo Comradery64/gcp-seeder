@@ -12,7 +12,7 @@ const DEFAULT_FLAG_PATTERNS = ['gyb-project-*', 'seed-*'];
 // `--empty` never disables the bootstrap set (the seeder needs it to operate
 // on the project again later) nor sts/iamcredentials (the WIF token-exchange
 // APIs — `iamcredentials` is already in BOOTSTRAP_APIS, `sts` is listed
-// explicitly per the v0.5 plan).
+// explicitly).
 const EMPTY_MODE_KEEP_APIS = new Set([...BOOTSTRAP_APIS, 'sts.googleapis.com', 'iamcredentials.googleapis.com']);
 
 // GCP auto-creates these two service accounts; deleting the default compute SA
@@ -51,9 +51,8 @@ function globToRegex(glob: string): RegExp {
 }
 
 /**
- * `DestroyOptions` plus the liens + `--empty` additions. Kept local to this
- * file (per the v0.5 architecture rule) rather than editing `src/types.ts`;
- * the integration pass should fold these onto the shared type.
+ * `DestroyOptions` plus the liens + `--empty` additions. Candidates to fold
+ * into the shared type in `src/types.ts`.
  */
 export interface DestroyOptionsExt extends DestroyOptions {
   /** Remove any liens found on a project before deleting it. Default false. */
