@@ -58,7 +58,7 @@ async function drain<T>(promise: Promise<T>): Promise<T> {
     (e) => { settled = true; throw e; },
   );
   tracked.catch(() => {}); // avoid unhandledRejection while we spin
-  for (let i = 0; i < 500 && !settled; i++) {
+  for (const start = performance.now(); !settled && performance.now() - start < 10_000; ) {
     mock.timers.runAll();
     // Yield a full macrotask (not just a microtask) so the seeder's real fs
     // writes — key file + WIF snippet — can complete between poll iterations.

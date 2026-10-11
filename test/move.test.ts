@@ -12,7 +12,7 @@ async function drain<T>(promise: Promise<T>): Promise<T> {
   let settled = false;
   const tracked = promise.then((v) => { settled = true; return v; }, (e) => { settled = true; throw e; });
   tracked.catch(() => {});
-  for (let i = 0; i < 200 && !settled; i++) {
+  for (const start = performance.now(); !settled && performance.now() - start < 10_000; ) {
     mock.timers.runAll();
     await new Promise((r) => setImmediate(r));
   }

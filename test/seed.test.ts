@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { google } from 'googleapis';
 import { seedProject, generateProjectId, createProjectOAuthClient } from '../src/seeder.js';
+import { drainUntilSettled } from './helpers.js';
 
 afterEach(() => {
   mock.restoreAll();
@@ -60,10 +61,7 @@ test('happy path: creates the project and enables the requested APIs', async () 
     logger: () => {}, // keep test output quiet
   });
   // release the internal `await sleep(...)` calls as they get scheduled
-  for (let i = 0; i < 60; i++) {
-    mock.timers.runAll();
-    await new Promise((r) => setImmediate(r));
-  }
+  await drainUntilSettled(promise);
   const res = await promise;
 
   assert.equal(res.projectId, 'seed-unit-1');
@@ -107,10 +105,7 @@ test('creates multiple named service accounts and surfaces DWD grants', async ()
       auth: {} as never,
       logger: () => {},
     });
-    for (let i = 0; i < 60; i++) {
-      mock.timers.runAll();
-      await new Promise((r) => setImmediate(r));
-    }
+    await drainUntilSettled(promise);
     const res = await promise;
 
     assert.equal(saCreate.mock.callCount(), 2);
@@ -155,10 +150,7 @@ test('org policy blocking SA key creation warns instead of throwing', async () =
     auth: {} as never,
     logger: () => {},
   });
-  for (let i = 0; i < 60; i++) {
-    mock.timers.runAll();
-    await new Promise((r) => setImmediate(r));
-  }
+  await drainUntilSettled(promise);
   const res = await promise; // must NOT throw
 
   // The SA is still surfaced (with its client id), just without a key file.
@@ -202,10 +194,7 @@ for (const [parent, expected, absent] of [
       auth: {} as never,
       logger: () => {},
     });
-    for (let i = 0; i < 60; i++) {
-      mock.timers.runAll();
-      await new Promise((r) => setImmediate(r));
-    }
+    await drainUntilSettled(promise);
     const res = await promise;
     assert.equal(res.oauthClient, undefined);
     const w = res.warnings.find((x) => /Could not create OAuth client/.test(x)) ?? '';
@@ -236,10 +225,7 @@ function mockOAuthApis(opts: { parent?: string; brands: { name: string }[] }) {
 
 async function drain<T>(p: Promise<T>): Promise<T> {
   p.catch(() => {}); // rejection is asserted by the caller; don't let it go unhandled mid-drain
-  for (let i = 0; i < 60; i++) {
-    mock.timers.runAll();
-    await new Promise((r) => setImmediate(r));
-  }
+  await drainUntilSettled(p);
   return p;
 }
 

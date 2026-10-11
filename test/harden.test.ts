@@ -17,7 +17,7 @@ async function drive<T>(p: Promise<T>): Promise<T> {
   let settled = false;
   const out = p.finally(() => { settled = true; });
   out.catch(() => {});
-  for (let i = 0; i < 500 && !settled; i++) {
+  for (const start = performance.now(); !settled && performance.now() - start < 10_000; ) {
     mock.timers.runAll();
     await new Promise((r) => setImmediate(r));
   }

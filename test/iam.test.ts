@@ -2,6 +2,7 @@ import test, { mock, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { google } from 'googleapis';
 import { ensureProjectRoles, modifyProjectIamPolicy, removeProjectRole } from '../src/iam.js';
+import { drainUntilSettled } from './helpers.js';
 
 afterEach(() => {
   mock.restoreAll();
@@ -72,7 +73,7 @@ test('modifyProjectIamPolicy retries on an etag conflict and re-reads before the
   });
   mock.method(google, 'cloudresourcemanager', () => ({ projects: { getIamPolicy, setIamPolicy } }) as never);
   const p = modifyProjectIamPolicy({} as never, 'p1', (pol) => ({ ...pol, bindings: [{ role: 'r', members: ['m'] }] }));
-  for (let i = 0; i < 10; i++) { mock.timers.runAll(); await new Promise((r) => setImmediate(r)); }
+  await drainUntilSettled(p);
   const res = await p;
   assert.equal(res.changed, true);
   assert.equal(getIamPolicy.mock.callCount(), 2);

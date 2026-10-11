@@ -1,6 +1,7 @@
 import test, { mock, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { google } from 'googleapis';
+import { drainUntilSettled } from './helpers.js';
 import {
   isApiNotReadyError,
   waitForServicesEnabled,
@@ -51,10 +52,7 @@ test('waitForServicesEnabled returns once every API reports ENABLED', async () =
   const promise = waitForServicesEnabled({} as never, 'p1', ['serviceusage.googleapis.com'], {
     log: () => {},
   });
-  for (let i = 0; i < 20; i++) {
-    mock.timers.runAll();
-    await new Promise((r) => setImmediate(r));
-  }
+  await drainUntilSettled(promise);
   await promise;
   assert.ok(get.mock.callCount() >= 2);
 });
@@ -70,10 +68,7 @@ test('waitForServicesEnabled throws on timeout, naming the still-not-ENABLED API
     log: () => {},
   });
   const assertion = assert.rejects(promise, /serviceusage\.googleapis\.com/);
-  for (let i = 0; i < 20; i++) {
-    mock.timers.runAll();
-    await new Promise((r) => setImmediate(r));
-  }
+  await drainUntilSettled(assertion);
   await assertion;
 });
 
@@ -113,10 +108,7 @@ test('probeApisReady reports timeout when the readiness 403 persists', async () 
     intervalMs: 5_000,
     log: () => {},
   });
-  for (let i = 0; i < 20; i++) {
-    mock.timers.runAll();
-    await new Promise((r) => setImmediate(r));
-  }
+  await drainUntilSettled(promise);
   const results = await promise;
   assert.deepEqual(results, [{ api: 'cloudresourcemanager.googleapis.com', status: 'timeout' }]);
 });
@@ -131,10 +123,7 @@ test('withApiReadyRetry retries while not-ready, then succeeds', async () => {
   });
 
   const promise = withApiReadyRetry(fn, { attempts: 5, intervalMs: 1_000, log: () => {} });
-  for (let i = 0; i < 20; i++) {
-    mock.timers.runAll();
-    await new Promise((r) => setImmediate(r));
-  }
+  await drainUntilSettled(promise);
   const result = await promise;
   assert.equal(result, 'ok');
   assert.equal(fn.mock.callCount(), 3);
