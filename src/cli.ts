@@ -20,6 +20,7 @@ import { findAccessibleOrganizations, preflight } from './preflight.js';
 import { assertNoViolations, loadOrgConfig, resolveOrgConfigPath, resolvePolicy, type OrgConfig } from './orgconfig.js';
 import { parseLabelArgs } from './labels.js';
 import { getCallerEmail } from './auth.js';
+import { assertSeedHasIntent } from './seedguard.js';
 import type { PreflightReport } from './preflight.js';
 import { loadManifest, manifestToSeedOptions } from './manifest.js';
 import { VERSION } from './version.js';
@@ -496,6 +497,9 @@ async function run(opts: CliOptions): Promise<void> {
   // human output so stdout is a single clean JSON document.
   const json = Boolean(opts.json);
   const interactive = !opts.yes && !json;
+
+  // Refuse a bare non-interactive run before touching the network.
+  if (!opts.manifest) assertSeedHasIntent(opts, interactive);
 
   // Preflight: make sure we actually have credentials before doing any work.
   await ensureBootstrap({ interactive, autoInstall: Boolean(opts.yes) || json, logger: json ? () => {} : log });
