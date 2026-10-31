@@ -7,6 +7,7 @@ import { BOOTSTRAP_APIS } from './apis.js';
 import { resolveAuth } from './auth.js';
 import { buildSeedLabels, validateUserLabels } from './labels.js';
 import { setupWif, WIF_APIS } from './wif.js';
+import { ensureOwnerContact, ESSENTIAL_CONTACTS_API } from './contacts.js';
 import { linkBillingAccount } from './billing.js';
 import { grantServiceAccountRoles } from './roles.js';
 import { probeApisReady, waitForServicesEnabled, withApiReadyRetry } from './readiness.js';
@@ -371,6 +372,7 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
     ...(options.harden ? ['compute.googleapis.com'] : []),
     ...(options.budget ? ['billingbudgets.googleapis.com'] : []),
     ...(options.budget?.topic || options.budget?.killSwitch ? ['pubsub.googleapis.com'] : []),
+    ...(options.ownerEmail ? [ESSENTIAL_CONTACTS_API] : []),
     ...options.apis,
   ]);
   const enabledApis = await enableApis(auth, projectId, apisToEnable, log);
@@ -517,6 +519,19 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
     if (b.killSwitch && pubsubTopic) {
       result.budget.killSwitchDir = await writeKillSwitchTemplate(outputDir, { ...spec, topic: pubsubTopic });
       log(`✓ Kill-switch template written to ${result.budget.killSwitchDir} (not deployed — see its README)`);
+    }
+  }
+
+  // The owner's real address, behind the label-safe `owner` label.
+  if (options.ownerEmail) {
+    try {
+      const contact = await withApiReadyRetry(() => ensureOwnerContact(auth, projectId, options.ownerEmail!, log), { log });
+      result.ownerContact = contact.email;
+    } catch (err) {
+      result.warnings.push(
+        `Could not record ${options.ownerEmail} as the project's Essential Contact: ${(err as Error).message.split('\n')[0]} ` +
+          'The owner label is still set; add the contact in the console under IAM & Admin → Essential Contacts.',
+      );
     }
   }
 

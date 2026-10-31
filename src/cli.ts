@@ -535,6 +535,7 @@ async function run(opts: CliOptions): Promise<void> {
       ttl: resolved.ttl,
       harden: resolved.harden,
       labels: resolved.labels,
+      ownerEmail: resolved.owner,
       budget: seedOpts.budget ?? (resolved.budgetUsd !== undefined && billingAccount ? { amountUsd: resolved.budgetUsd } : undefined),
       billingAccount,
       outputDir: seedOpts.outputDir ?? opts.outputDir,
@@ -711,6 +712,7 @@ async function run(opts: CliOptions): Promise<void> {
     budget,
     ttl: policy.ttl,
     labels: policy.labels,
+    ownerEmail: policy.owner,
     supportEmail,
     outputDir: opts.outputDir,
     logger: json ? () => {} : undefined,
@@ -737,6 +739,7 @@ async function run(opts: CliOptions): Promise<void> {
   }
   printHardening(result);
   if (result.oauthClient) console.log(`  OAuth:    ${result.oauthClient.clientSecretsFile}`);
+  if (result.ownerContact) console.log(`  Owner:    ${result.ownerContact}  (Essential Contact)`);
   for (const w of result.warnings) console.warn(`  ⚠ ${w}`);
 
   printWifGuidance(result);
