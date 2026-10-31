@@ -527,7 +527,7 @@ Add your own labels with `--label key=value` (repeatable) and record who owns th
 npx gcp-seeder --yes --preset ai --owner jane@example.com --label cost-center=eng
 ```
 
-Label values may only contain lowercase letters, digits, `_` and `-`, so the owner email is stored in a readable, label-safe form: `jane@example.com` → `owner=jane_at_example-com`. With an org config that sets `owner.domain: example.com`, home-domain owners are stored by name only (`owner=jane`). Other domains, such as contractors or service accounts, keep the full form so they can't collide. `seeded-by`, `seeded-at` and `expires` are managed by the tool and can't be set by hand.
+Label values may only contain lowercase letters, digits, `_` and `-`, so the owner email is stored in a readable, label-safe form: `jane@example.com` → `owner=jane_at_example-com`. With an org config that sets `owner.domain: example.com`, home-domain owners are stored by name only (`owner=jane`). Other domains, such as contractors or service accounts, keep the full form so they can't collide. The exact address is also recorded as the project's **Essential Contact** (category `TECHNICAL`, under IAM & Admin → Essential Contacts), so there's a reliable "who to tell" even though the label can't hold an email. If that write fails, `seed` warns and keeps the label. `seeded-by`, `seeded-at` and `expires` are managed by the tool and can't be set by hand.
 
 ### Org policy — `gcp-seeder.org.yaml`
 
