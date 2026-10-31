@@ -1,6 +1,6 @@
 import { google } from 'googleapis';
 import type { AuthClient } from 'google-auth-library';
-import { resolveAuth } from './auth.js';
+import { adcQuotaProject, resolveAuth } from './auth.js';
 import { resolveBillingAccount, canLinkProjects, countLinkedProjects } from './billing.js';
 import type { PolicyViolation } from './orgconfig.js';
 
@@ -30,6 +30,12 @@ export interface PreflightOptions {
   wantsServiceAccountKey?: boolean;
   /** Whether the plan includes an OAuth client (drives the oauth-org check). */
   wantsOAuthClient?: boolean;
+  /**
+   * Project to bill org-policy reads to (`x-goog-user-project`). The Org Policy
+   * API refuses plain user ADC without one. Defaults to the quota project ADC
+   * was configured with.
+   */
+  quotaProject?: string;
   /** Violations from `applyOrgPolicy`. Omit when no org config is in use (check is skipped). */
   policyViolations?: PolicyViolation[];
   /** Pre-authorized cloud-platform auth client. Falls back to ADC. */
@@ -263,15 +269,17 @@ async function checkOrgPolicy(
   parent: string | undefined,
   wantsServiceAccountKey: boolean,
   apis: string[],
+  quotaProject?: string,
 ): Promise<PreflightCheck> {
   if (!parent) return { id: 'org-policy', status: 'skip', detail: 'No --parent given; org policy cannot be evaluated.' };
+  const headers = quotaProject ? { 'x-goog-user-project': quotaProject } : undefined;
   try {
     const orgpolicy = google.orgpolicy({ version: 'v2', auth: auth as never });
     const isFolder = parent.startsWith('folders/');
     const policies = isFolder ? orgpolicy.folders.policies : orgpolicy.organizations.policies;
 
     const getEffective = async (constraint: string): Promise<EffectivePolicyLike | undefined> => {
-      const { data } = await policies.getEffectivePolicy({ name: `${parent}/policies/${constraint}` });
+      const { data } = await policies.getEffectivePolicy({ name: `${parent}/policies/${constraint}`, ...(headers ? { headers } : {}) } as never);
       return data as EffectivePolicyLike;
     };
 
@@ -311,7 +319,12 @@ async function checkOrgPolicy(
       ...(fix ? { fix } : {}),
     };
   } catch (err) {
-    return { id: 'org-policy', status: 'skip', detail: `Could not read org policy on ${parent}: ${errMsg(err)}` };
+    return {
+      id: 'org-policy',
+      status: 'skip',
+      detail: `Could not read org policy on ${parent}: ${errMsg(err)}`,
+      ...(quotaProject ? {} : { fix: 'The Org Policy API needs a quota project: pass --quota-project <id> (a project with orgpolicy.googleapis.com enabled).' }),
+    };
   }
 }
 
@@ -434,7 +447,7 @@ export async function preflight(options: PreflightOptions = {}): Promise<Preflig
     checkQuota(auth),
     checkParent(auth, options.parent),
     checkBilling(auth, options.billingAccount, apis),
-    checkOrgPolicy(auth, options.parent, options.wantsServiceAccountKey ?? false, apis),
+    checkOrgPolicy(auth, options.parent, options.wantsServiceAccountKey ?? false, apis, options.quotaProject ?? adcQuotaProject(auth)),
     checkBootstrapApis(auth),
     checkOAuthOrg(auth, options.parent, options.wantsOAuthClient ?? false),
     Promise.resolve(checkPolicy(options.policyViolations)),

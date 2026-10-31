@@ -33,6 +33,9 @@ export async function resolveAuth(provided?: AuthClient): Promise<AuthClient> {
     // (e.g. an old throwaway), which makes every call fail with "Project … has
     // been deleted." Our admin operations bill quota to the target project in
     // the request path, so we drop the user-project header entirely to stay robust.
+    // Keep the original aside: checks that run before the target project exists
+    // (preflight's org-policy read) can still opt in to billing it explicitly.
+    (client as { seederAdcQuotaProject?: string }).seederAdcQuotaProject = client.quotaProjectId ?? undefined;
     client.quotaProjectId = undefined;
   } catch (err) {
     // No ADC discoverable at all — try a gcloud-minted token, else guide the user.
@@ -113,4 +116,9 @@ export async function getCallerEmail(auth: AuthClient): Promise<string | undefin
   }
   const target = (auth as { targetPrincipal?: unknown }).targetPrincipal;
   return typeof target === 'string' && target.includes('@') ? target : undefined;
+}
+
+/** The quota project ADC was configured with, before `resolveAuth` stripped it. */
+export function adcQuotaProject(auth: AuthClient): string | undefined {
+  return (auth as { seederAdcQuotaProject?: string }).seederAdcQuotaProject || undefined;
 }

@@ -56,6 +56,7 @@ program
   .option('--budget-topic <name>', 'Pub/Sub topic to create/reuse for budget notifications')
   .option('--kill-switch', 'Write (not deploy) a Cloud Function that unlinks billing when the budget is exhausted; implies a topic')
   .option('--skip-preflight', 'Skip the read-only preflight checks before creating anything')
+  .option('--quota-project <id>', 'Project to bill preflight Org Policy reads to (defaults to your ADC quota project)')
   .option('--oauth-client', 'Create an OAuth client + consent screen')
   .option('--support-email <email>', 'Consent-screen support email (for --oauth-client)')
   .option('--output-dir <dir>', 'Where to write credentials', './credentials')
@@ -83,8 +84,9 @@ program
   .option('--label <key=value>', 'Planned extra label; repeat for more', (v: string, acc: string[] = []) => [...acc, v])
   .option('--ttl <duration>', 'Planned expiry (checked against the org config)')
   .option('--budget <usd>', 'Planned budget in USD (checked against the org config)', (v) => parseFloat(v))
+  .option('--quota-project <id>', 'Project to bill the Org Policy reads to (defaults to your ADC quota project)')
   .option('--json', 'Emit the PreflightReport as JSON')
-  .action(async (opts: { projectId?: string; parent?: string; billingAccount?: string; apis?: string; preset?: string; serviceAccount?: boolean; oauthClient?: boolean; orgConfig?: string; owner?: string; label?: string[]; ttl?: string; budget?: number; json?: boolean }) => {
+  .action(async (opts: { projectId?: string; parent?: string; billingAccount?: string; apis?: string; preset?: string; serviceAccount?: boolean; oauthClient?: boolean; orgConfig?: string; owner?: string; label?: string[]; ttl?: string; budget?: number; quotaProject?: string; json?: boolean }) => {
     const apis = opts.apis
       ? opts.apis.split(',').map((s) => s.trim()).filter(Boolean)
       : opts.preset
@@ -111,6 +113,7 @@ program
       wantsServiceAccountKey,
       wantsOAuthClient: Boolean(opts.oauthClient),
       policyViolations: violations,
+      quotaProject: opts.quotaProject,
       logger: opts.json ? undefined : log,
     });
     if (opts.json) {
@@ -460,6 +463,7 @@ interface CliOptions {
   budgetTopic?: string;
   killSwitch?: boolean;
   skipPreflight?: boolean;
+  quotaProject?: string;
   oauthClient?: boolean;
   supportEmail?: string;
   outputDir: string;
@@ -642,6 +646,7 @@ async function run(opts: CliOptions): Promise<void> {
       wantsServiceAccountKey,
       wantsOAuthClient: credentials.oauthClient,
       policyViolations: violations,
+      quotaProject: opts.quotaProject,
       logger: json ? undefined : undefined,
     });
     if (!json) printPreflightReport(report);
