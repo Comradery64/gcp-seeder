@@ -5,7 +5,7 @@ import { google } from 'googleapis';
 import type { AuthClient } from 'google-auth-library';
 import { BOOTSTRAP_APIS } from './apis.js';
 import { resolveAuth } from './auth.js';
-import { buildSeedLabels } from './labels.js';
+import { buildSeedLabels, validateUserLabels } from './labels.js';
 import { setupWif, WIF_APIS } from './wif.js';
 import { linkBillingAccount } from './billing.js';
 import { grantServiceAccountRoles } from './roles.js';
@@ -343,7 +343,7 @@ export async function seedProject(options: SeedOptions): Promise<SeedResult> {
   }
 
   // Build labels up front so an invalid --ttl fails before anything is created.
-  const labels = buildSeedLabels({ ttl: options.ttl });
+  const labels = { ...validateUserLabels({ ...(options.labels ?? {}) }), ...buildSeedLabels({ ttl: options.ttl }) };
   const reconcile = options.reconcile === true;
 
   const { projectNumber, parent: projectParent } = await createProject(auth, projectId, displayName, options.parent, labels, reconcile, log);

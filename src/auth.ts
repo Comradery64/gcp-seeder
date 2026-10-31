@@ -1,3 +1,4 @@
+import { google } from 'googleapis';
 import { GoogleAuth, OAuth2Client, type AuthClient } from 'google-auth-library';
 import { gcloudAdcAccessToken } from './gcloud.js';
 
@@ -96,4 +97,20 @@ export function buildOAuthClientFromEnv(): OAuth2Client | undefined {
     clientSecret,
     redirectUri: 'http://localhost',
   });
+}
+
+/**
+ * Best-effort email of whoever the credentials act as: the userinfo email for
+ * user credentials, else the target principal of impersonated service-account
+ * credentials (userinfo fails for those). Undefined when neither is available.
+ */
+export async function getCallerEmail(auth: AuthClient): Promise<string | undefined> {
+  try {
+    const { data } = await google.oauth2({ version: 'v2', auth: auth as never }).userinfo.get();
+    if (data.email) return data.email;
+  } catch {
+    // fall through to the impersonation check
+  }
+  const target = (auth as { targetPrincipal?: unknown }).targetPrincipal;
+  return typeof target === 'string' && target.includes('@') ? target : undefined;
 }

@@ -95,7 +95,7 @@ test('all-pass baseline: every check reports pass or skip, report is ok', async 
   const r = await preflight({ auth: {} as never });
 
   assert.equal(r.ok, true);
-  assert.equal(r.checks.length, 8);
+  assert.equal(r.checks.length, 9);
   assert.ok(!r.checks.some((c) => c.status === 'fail'));
   assert.equal(findCheck(r.checks, 'auth').status, 'pass');
   assert.match(findCheck(r.checks, 'auth').detail, /me@example\.com/);
@@ -122,7 +122,7 @@ test('preflight() never throws when resolveAuth itself fails; auth is a FAIL and
   // No auth injected and ADC is blocked by test/setup.ts, so resolveAuth rejects.
   // "Nothing could be checked" must not read as ok:true to a CI/agent consumer.
   const r = await preflight({});
-  assert.equal(r.checks.length, 8);
+  assert.equal(r.checks.length, 9);
   const auth = r.checks.find((c) => c.id === 'auth')!;
   assert.equal(auth.status, 'fail');
   assert.match(auth.fix ?? '', /gcp-seeder init/);

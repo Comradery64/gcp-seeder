@@ -140,6 +140,12 @@ export interface SeedOptions {
    */
   ttl?: string;
   /**
+   * Extra project labels (e.g. `owner`, `cost-center`). Validated against GCP
+   * label rules; the managed keys `seeded-by`, `seeded-at` and `expires` are
+   * reserved.
+   */
+  labels?: Record<string, string>;
+  /**
    * Billing account to link right after the project is created (before APIs
    * are enabled — most non-Workspace APIs refuse to enable on an unbilled
    * project). "012345-ABCDEF-678901" or "billingAccounts/…". Omit to leave the

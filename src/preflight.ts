@@ -2,6 +2,7 @@ import { google } from 'googleapis';
 import type { AuthClient } from 'google-auth-library';
 import { resolveAuth } from './auth.js';
 import { resolveBillingAccount, canLinkProjects, countLinkedProjects } from './billing.js';
+import type { PolicyViolation } from './orgconfig.js';
 
 export interface PreflightCheck {
   id: string;
@@ -29,6 +30,8 @@ export interface PreflightOptions {
   wantsServiceAccountKey?: boolean;
   /** Whether the plan includes an OAuth client (drives the oauth-org check). */
   wantsOAuthClient?: boolean;
+  /** Violations from `applyOrgPolicy`. Omit when no org config is in use (check is skipped). */
+  policyViolations?: PolicyViolation[];
   /** Pre-authorized cloud-platform auth client. Falls back to ADC. */
   auth?: AuthClient;
   /** Receives progress lines. Default: no-op. */
@@ -58,7 +61,7 @@ export const BILLING_REQUIRED_APIS = new Set<string>([
   'generativelanguage.googleapis.com',
 ]);
 
-const ALL_CHECK_IDS = ['auth', 'project-id', 'quota', 'parent', 'billing', 'org-policy', 'bootstrap-apis', 'oauth-org'];
+const ALL_CHECK_IDS = ['auth', 'project-id', 'quota', 'parent', 'billing', 'org-policy', 'bootstrap-apis', 'oauth-org', 'policy'];
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -387,6 +390,18 @@ async function checkOAuthOrg(auth: AuthClient, parent: string | undefined, wants
   }
 }
 
+/** 9. policy — the request against the org config (gcp-seeder.org.yaml). Local, no API calls. */
+export function checkPolicy(violations: PolicyViolation[] | undefined): PreflightCheck {
+  if (!violations) return { id: 'policy', status: 'skip', detail: 'No org config in use.' };
+  if (violations.length === 0) return { id: 'policy', status: 'pass', detail: 'Request complies with the org config.' };
+  return {
+    id: 'policy',
+    status: 'fail',
+    detail: violations.map((v) => `${v.rule}: ${v.detail}`).join(' '),
+    fix: violations.map((v) => v.fix).join(' '),
+  };
+}
+
 export const DEFAULT_PROJECTS_PER_BILLING_ACCOUNT = 5;
 
 export async function preflight(options: PreflightOptions = {}): Promise<PreflightReport> {
@@ -404,7 +419,9 @@ export async function preflight(options: PreflightOptions = {}): Promise<Preflig
     return {
       checks: [
         { id: 'auth', status: 'fail', detail, fix: 'Run `gcp-seeder init` (or `gcloud auth application-default login`) and retry.' },
-        ...ALL_CHECK_IDS.filter((id) => id !== 'auth').map((id) => ({ id, status: 'skip' as const, detail: 'Skipped: no credentials.' })),
+        ...ALL_CHECK_IDS.filter((id) => id !== 'auth' && id !== 'policy').map((id) => ({ id, status: 'skip' as const, detail: 'Skipped: no credentials.' })),
+        // The policy check is local — report it even without credentials.
+        checkPolicy(options.policyViolations),
       ],
       ok: false,
     };
@@ -420,6 +437,7 @@ export async function preflight(options: PreflightOptions = {}): Promise<Preflig
     checkOrgPolicy(auth, options.parent, options.wantsServiceAccountKey ?? false, apis),
     checkBootstrapApis(auth),
     checkOAuthOrg(auth, options.parent, options.wantsOAuthClient ?? false),
+    Promise.resolve(checkPolicy(options.policyViolations)),
   ]);
 
   return { checks, ok: !checks.some((c) => c.status === 'fail') };

@@ -56,6 +56,11 @@ export const OrgConfigSchema = z
 
 export type OrgConfig = z.infer<typeof OrgConfigSchema>;
 
+/** The org config path in effect: the --org-config flag, else GCP_SEEDER_ORG_CONFIG. */
+export function resolveOrgConfigPath(flag?: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return flag || env.GCP_SEEDER_ORG_CONFIG || undefined;
+}
+
 /** Parse + validate an org config YAML file. */
 export async function loadOrgConfig(filePath: string): Promise<OrgConfig> {
   const raw = await readFile(filePath, 'utf8');
@@ -184,4 +189,27 @@ export function applyOrgPolicy(config: OrgConfig, req: PolicyRequest): { resolve
   }
 
   return { resolved, violations };
+}
+
+/**
+ * Policy resolution for callers that may or may not have an org config. With a
+ * config: defaults + violations via `applyOrgPolicy`. Without: the request is
+ * unchanged except an explicit owner becomes the `owner` label, and
+ * `violations` is undefined (so preflight reports the policy check as skipped).
+ */
+export function resolvePolicy(
+  config: OrgConfig | undefined,
+  req: PolicyRequest,
+): { resolved: PolicyRequest; violations: PolicyViolation[] | undefined } {
+  if (config) return applyOrgPolicy(config, req);
+  const labels = { ...(req.labels ?? {}) };
+  if (req.owner) labels.owner = encodeOwnerLabel(req.owner);
+  return { resolved: { ...req, labels }, violations: undefined };
+}
+
+/** Throw a single readable error listing every violation, each with its fix. */
+export function assertNoViolations(violations: PolicyViolation[] | undefined): void {
+  if (!violations?.length) return;
+  const lines = violations.map((v) => `  • ${v.rule}: ${v.detail} Fix: ${v.fix}`).join('\n');
+  throw new Error(`Request violates the org config:\n${lines}`);
 }
