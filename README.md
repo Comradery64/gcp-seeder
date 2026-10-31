@@ -521,6 +521,52 @@ npx gcp-seeder --yes --preset ai --ttl 7d      # a throwaway that expires in a w
 
 `audit` and `destroy` both prefer the `seeded-by` label to decide what's yours (the `gyb-project-*` / `seed-*` globs remain as a fallback for projects created before labels existed), so a project with a custom id is still recognized and safe to target.
 
+Add your own labels with `--label key=value` (repeatable) and record who owns the project with `--owner <email>`:
+
+```bash
+npx gcp-seeder --yes --preset ai --owner jane@example.com --label cost-center=eng
+```
+
+Label values may only contain lowercase letters, digits, `_` and `-`, so the owner email is stored in a readable, label-safe form: `jane@example.com` → `owner=jane_at_example-com`. With an org config that sets `owner.domain: example.com`, home-domain owners are stored by name only (`owner=jane`). Other domains, such as contractors or service accounts, keep the full form so they can't collide. `seeded-by`, `seeded-at` and `expires` are managed by the tool and can't be set by hand.
+
+### Org policy — `gcp-seeder.org.yaml`
+
+For IT admins: write your rules once, and every `seed` and `preflight` run is checked against them. A developer with no org-admin rights runs `npx gcp-seeder` and gets a project that already complies, or a clear refusal before anything is created.
+
+```yaml
+# gcp-seeder.org.yaml
+version: 1
+parents:
+  default: folders/123456789012          # used when --parent is omitted
+  allowed: [folders/123456789012]        # --parent must be one of these
+billing:
+  account: 012345-ABCDEF-678901          # default billing account
+  required: true                         # refuse unbilled projects
+budget: { defaultUsd: 50, maxUsd: 500 }  # default budget, and the most anyone may set
+ttl: { default: 30d, max: 90d, allowNone: false }   # every project expires
+labels: { required: [owner, cost-center] }
+owner: { required: true, domain: example.com }
+harden: true                             # always remove insecure project defaults
+keys: forbid                             # no downloadable SA keys; use --wif
+apis: { denied: [compute.googleapis.com] }
+```
+
+Point the tool at it with `--org-config gcp-seeder.org.yaml`, or set `GCP_SEEDER_ORG_CONFIG` once in your shell or CI:
+
+```bash
+export GCP_SEEDER_ORG_CONFIG=~/admin/gcp-seeder.org.yaml
+npx gcp-seeder preflight --label cost-center=eng      # policy check: pass/fail with the fix for each rule
+npx gcp-seeder --yes --preset ai --label cost-center=eng
+```
+
+How the rules apply:
+
+- **Defaults fill gaps.** Anything you don't pass (parent, billing account, budget, ttl, harden) comes from the config.
+- **Narrow-only.** A request may tighten a rule (`--ttl 7d`, `--budget 10`) but never loosen it. `--ttl 180d` against `max: 90d` is refused, with the fix in the message.
+- **The owner defaults to you.** With an org config, an omitted `--owner` becomes the signed-in account (or the impersonated service account).
+- **Not skippable.** `--skip-preflight` skips the API checks, not the org config. Manifests (`--manifest`) are checked against it too, and may set `owner` and `labels`.
+- **Strict.** Unknown keys in the YAML are an error, so a typo can't silently disable a rule. Every section is optional, and an absent section imposes no rule.
+
 ### Sweep — `sweep`
 
 The command to run on a schedule even if you never seed again: find every seeder-owned project and delete the expired ones. **Dry-run by default**, and it delegates deletion to `destroy`, so all the same safety rails apply (soft-delete, ownership check).
