@@ -101,3 +101,48 @@ test('nothing selected → no destroy call', async () => {
   assert.equal(r.destroy, undefined);
   assert.equal(projDelete.mock.callCount(), 0);
 });
+
+test('projectIds scopes the sweep: an expired project outside the list is never selected or deleted', async () => {
+  const projDelete = mock.fn(async () => ({ data: {} }));
+  stub(projDelete);
+
+  // seed-expired is lapsed but NOT in scope; seed-live is in scope but not expired.
+  const dry = await sweepProjects({ now: NOW, projectIds: ['seed-live'], auth: {} as never });
+  assert.deepEqual(dry.candidates.map((c) => c.projectId), ['seed-live']);
+  assert.equal(dry.candidates.filter((c) => c.selected).length, 0);
+
+  const applied = await sweepProjects({ now: NOW, projectIds: ['seed-live'], apply: true, auth: {} as never });
+  assert.equal(applied.destroy, undefined);
+  assert.equal(projDelete.mock.callCount(), 0, 'an out-of-scope expired project must not be deleted');
+
+  // In scope and expired → selected as normal.
+  const own = await sweepProjects({ now: NOW, projectIds: ['seed-expired'], auth: {} as never });
+  assert.deepEqual(own.candidates.filter((c) => c.selected).map((c) => c.projectId), ['seed-expired']);
+});
+
+test('a stale list never causes a deletion: selected projects are re-read, and a just-extended expiry wins', async () => {
+  const projDelete = mock.fn(async () => ({ data: {} }));
+  // The list index still shows the old, lapsed expiry; a fresh get shows it was extended.
+  mock.method(google, 'cloudresourcemanager', () => ({
+    projects: {
+      list: async () => ({ data: { projects: [
+        { projectId: 'seed-extended', lifecycleState: 'ACTIVE', labels: { 'seeded-by': 'gcp-seeder', 'seeded-at': '2026-06-01', expires: '2026-07-01' } },
+        { projectId: 'seed-going', lifecycleState: 'ACTIVE', labels: { 'seeded-by': 'gcp-seeder', 'seeded-at': '2026-06-01', expires: '2026-07-01' } },
+      ] } }),
+      get: async ({ projectId }: { projectId: string }) => ({
+        data: projectId === 'seed-extended'
+          ? { lifecycleState: 'ACTIVE', labels: { 'seeded-by': 'gcp-seeder', 'seeded-at': '2026-06-01', expires: '2026-12-31' } }
+          : { lifecycleState: 'DELETE_REQUESTED', labels: { 'seeded-by': 'gcp-seeder', expires: '2026-07-01' } },
+      }),
+      delete: projDelete,
+    },
+  }) as never);
+  mock.method(google, 'iam', () => ({ projects: { serviceAccounts: { list: async () => ({ data: { accounts: [] } }) } } }) as never);
+
+  const r = await sweepProjects({ now: NOW, apply: true, auth: {} as never });
+  const ext = r.candidates.find((c) => c.projectId === 'seed-extended')!;
+  assert.equal(ext.selected, false);
+  assert.equal(ext.expires, '2026-12-31', 'reports the fresh expiry, not the stale one');
+  assert.equal(r.candidates.find((c) => c.projectId === 'seed-going')!.selected, false, 'already deleting → skipped');
+  assert.equal(projDelete.mock.callCount(), 0, 'nothing deleted on stale data');
+});
