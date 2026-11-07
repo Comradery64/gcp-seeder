@@ -533,6 +533,8 @@ npx gcp-seeder sweep --max-age 30d   # also sweep owned projects older than 30 d
 
 `--max-age` catches projects with no `expires` label (e.g. seeded before you adopted TTLs) once they exceed the age you give.
 
+In a folder you share with other people, add `--project <id...>` to limit the sweep to your own projects (`npx gcp-seeder sweep --project seed-abc123 --apply`). Expiry and ownership rules still apply to the ids you name. Before deleting anything, `sweep` re-reads each selected project, because the project list can lag a label change by a few minutes. That way a just-extended expiry is never swept on stale data.
+
 #### Run sweep on a schedule
 
 `sweep` only clears expired projects if something runs it unattended. Two
