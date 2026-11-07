@@ -78,6 +78,25 @@ export async function sweepProjects(options: SweepOptions = {}): Promise<SweepRe
     });
   }
 
+  // projects.list is an eventually consistent index: labels can lag a recent
+  // change by minutes. Before anything is deleted, re-read each selected
+  // project and recompute — an expiry that was just extended must win.
+  const crm = google.cloudresourcemanager({ version: 'v1', auth: auth as never });
+  for (const c of candidates.filter((x) => x.selected)) {
+    const { data } = await crm.projects.get({ projectId: c.projectId });
+    const fresh = (data as RawProject).labels;
+    if (data.lifecycleState && data.lifecycleState !== 'ACTIVE') {
+      c.selected = false;
+      continue;
+    }
+    c.expires = fresh?.expires;
+    c.expired = isExpired(fresh, now);
+    const age = ageInDays(fresh, now);
+    c.ageDays = age;
+    c.stale = maxAgeDays !== undefined && age !== undefined && age >= maxAgeDays;
+    c.selected = c.expired || c.stale;
+  }
+
   log(`Found ${candidates.length} seeder-owned project(s); ${candidates.filter((c) => c.selected).length} to sweep.`);
 
   const selectedIds = candidates.filter((c) => c.selected).map((c) => c.projectId);
