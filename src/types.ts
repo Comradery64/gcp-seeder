@@ -355,6 +355,12 @@ export interface SweepOptions {
   now?: Date;
   /** Remove liens before deleting (passed through to destroy). Default false. */
   removeLiens?: boolean;
+  /**
+   * Restrict the sweep to these project ids. Expiry and ownership rules still
+   * apply to them. Use in shared folders so one person's sweep can't delete
+   * someone else's lapsed project.
+   */
+  projectIds?: string[];
   auth?: AuthClient;
   logger?: (message: string) => void;
 }

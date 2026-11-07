@@ -50,10 +50,12 @@ export async function sweepProjects(options: SweepOptions = {}): Promise<SweepRe
   log('Listing projects…');
   const projects = await listProjects(auth);
 
+  const only = options.projectIds?.length ? new Set(options.projectIds) : undefined;
   const candidates: SweepCandidate[] = [];
   for (const p of projects) {
     const projectId = p.projectId;
     if (!projectId) continue;
+    if (only && !only.has(projectId)) continue; // scoped sweep: never consider anything else
     if (p.lifecycleState && p.lifecycleState !== 'ACTIVE') continue; // skip already-deleting
 
     const byLabel = isSeederLabeled(p.labels);

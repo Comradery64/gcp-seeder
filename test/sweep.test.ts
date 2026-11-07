@@ -101,3 +101,22 @@ test('nothing selected → no destroy call', async () => {
   assert.equal(r.destroy, undefined);
   assert.equal(projDelete.mock.callCount(), 0);
 });
+
+test('projectIds scopes the sweep: an expired project outside the list is never selected or deleted', async () => {
+  const projDelete = mock.fn(async () => ({ data: {} }));
+  stub(projDelete);
+
+  // seed-expired is lapsed but NOT in scope; seed-live is in scope but not expired.
+  const dry = await sweepProjects({ now: NOW, projectIds: ['seed-live'], auth: {} as never });
+  assert.deepEqual(dry.candidates.map((c) => c.projectId), ['seed-live']);
+  assert.equal(dry.candidates.filter((c) => c.selected).length, 0);
+
+  const applied = await sweepProjects({ now: NOW, projectIds: ['seed-live'], apply: true, auth: {} as never });
+  assert.equal(applied.destroy, undefined);
+  assert.equal(projDelete.mock.callCount(), 0, 'an out-of-scope expired project must not be deleted');
+
+  // In scope and expired → selected as normal.
+  const own = await sweepProjects({ now: NOW, projectIds: ['seed-expired'], auth: {} as never });
+  assert.deepEqual(own.candidates.filter((c) => c.selected).map((c) => c.projectId), ['seed-expired']);
+});
+

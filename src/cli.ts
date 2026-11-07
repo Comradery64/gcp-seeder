@@ -195,16 +195,18 @@ program
   .option('--max-age <duration>', 'Also sweep projects older than this even without an expiry (e.g. 30d, 2w)')
   .option('--flag <pattern...>', 'Glob fallbacks to claim pre-label projects (default: gyb-project-*, seed-*)')
   .option('--remove-liens', 'Remove liens before deleting (otherwise a liened project is skipped)')
+  .option('--project <id...>', 'Only consider these projects (expiry/ownership rules still apply); use in shared folders')
   .option('--apply', 'Actually delete (default is a dry-run)')
   .option('--json', 'Emit the SweepResult as JSON (implies --yes; suppresses progress output)')
   .option('-y, --yes', 'Skip the interactive confirmation (for scripts)')
-  .action(async (opts: { maxAge?: string; flag?: string[]; removeLiens?: boolean; apply?: boolean; json?: boolean; yes?: boolean }) => {
+  .action(async (opts: { maxAge?: string; flag?: string[]; removeLiens?: boolean; project?: string[]; apply?: boolean; json?: boolean; yes?: boolean }) => {
     const json = Boolean(opts.json);
     // Always show the plan first (dry-run pass), so the user sees what's targeted.
     const plan = await sweepProjects({
       maxAge: opts.maxAge,
       flagPatterns: opts.flag,
       removeLiens: opts.removeLiens,
+      projectIds: opts.project,
       apply: false,
       logger: json ? undefined : log,
     });
@@ -233,7 +235,7 @@ program
       }
     }
 
-    const result = await sweepProjects({ maxAge: opts.maxAge, flagPatterns: opts.flag, removeLiens: opts.removeLiens, apply: true, logger: json ? undefined : log });
+    const result = await sweepProjects({ maxAge: opts.maxAge, flagPatterns: opts.flag, removeLiens: opts.removeLiens, projectIds: opts.project, apply: true, logger: json ? undefined : log });
     if (json) {
       console.log(JSON.stringify(result, null, 2));
     } else {
