@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.7.0](https://github.com/Comradery64/gcp-seeder/compare/v0.6.0...v0.7.0) (2026-11-07)
+
+
+### Features
+
+* enforce gcp-seeder.org.yaml in seed, preflight and manifests ([174353a](https://github.com/Comradery64/gcp-seeder/commit/174353a5e942f0e5a3649f1bc1121377b913dff0))
+* org policy (gcp-seeder.org.yaml), --owner/--label and Essential Contacts ([a3e578d](https://github.com/Comradery64/gcp-seeder/commit/a3e578d1c9d24da7c06933eceb64c410bb151711))
+* org policy, Essential Contacts owner, scoped sweep ([2418196](https://github.com/Comradery64/gcp-seeder/commit/241819608846e27123b8bb23e3f40d0ea89c7439))
+* **orgconfig:** label home-domain owners by local part only ([883cff3](https://github.com/Comradery64/gcp-seeder/commit/883cff3d3ff22a841579abf950c47eed3e73ade5))
+* **orgconfig:** org policy schema, owner label encoding and narrow-only checks ([c464b18](https://github.com/Comradery64/gcp-seeder/commit/c464b187d7b21304a22f2d87810213e70da40152))
+* record the project owner as an Essential Contact ([48b35bf](https://github.com/Comradery64/gcp-seeder/commit/48b35bf825e2ffb30fe95613f81de27b6c6b388d))
+
+
+### Bug Fixes
+
+* let sweep be scoped to specific projects (--project) ([ef89b97](https://github.com/Comradery64/gcp-seeder/commit/ef89b976f54f5f1e75d28207148742d43b23702e))
+* re-read selected projects before sweep deletes them ([d8e4330](https://github.com/Comradery64/gcp-seeder/commit/d8e43309493d88d4174380f2f79335f62b746eae))
+* refuse a bare non-interactive seed instead of creating a default project ([d15d692](https://github.com/Comradery64/gcp-seeder/commit/d15d692e7619c7798fa5ceb6ca820b2e5a45a5ee))
+* scoped sweep (--project) and re-read before delete ([4ac08a8](https://github.com/Comradery64/gcp-seeder/commit/4ac08a81386ef7d33b86263e94d849ad54d42b37))
+* send x-goog-user-project on preflight org-policy reads ([048c03b](https://github.com/Comradery64/gcp-seeder/commit/048c03bb45b0557eecdc950c7fdbdd6a8c2a49ad))
+
 ## [0.6.0](https://github.com/Comradery64/gcp-seeder/compare/v0.5.0...v0.6.0) (2026-10-11)
 
 
