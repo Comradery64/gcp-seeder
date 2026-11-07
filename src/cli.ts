@@ -17,6 +17,10 @@ import { resolveBillingAccount } from './billing.js';
 import { PRESET_ROLES, validateRoles } from './roles.js';
 import { resolveAuth } from './auth.js';
 import { findAccessibleOrganizations, preflight } from './preflight.js';
+import { assertNoViolations, loadOrgConfig, resolveOrgConfigPath, resolvePolicy, type OrgConfig } from './orgconfig.js';
+import { parseLabelArgs } from './labels.js';
+import { getCallerEmail } from './auth.js';
+import { assertSeedHasIntent } from './seedguard.js';
 import type { PreflightReport } from './preflight.js';
 import { loadManifest, manifestToSeedOptions } from './manifest.js';
 import { VERSION } from './version.js';
@@ -53,11 +57,15 @@ program
   .option('--budget-topic <name>', 'Pub/Sub topic to create/reuse for budget notifications')
   .option('--kill-switch', 'Write (not deploy) a Cloud Function that unlinks billing when the budget is exhausted; implies a topic')
   .option('--skip-preflight', 'Skip the read-only preflight checks before creating anything')
+  .option('--quota-project <id>', 'Project to bill preflight Org Policy reads to (defaults to your ADC quota project)')
   .option('--oauth-client', 'Create an OAuth client + consent screen')
   .option('--support-email <email>', 'Consent-screen support email (for --oauth-client)')
   .option('--output-dir <dir>', 'Where to write credentials', './credentials')
   .option('--ttl <duration>', 'Mark the project to expire after a duration (e.g. 30d, 2w, 12h); sweep deletes it once lapsed')
   .option('--manifest <file>', 'Reconcile from a gcp-seeder.yaml manifest (idempotent; existing project/SAs are reused)')
+  .option('--org-config <file>', 'Org policy (gcp-seeder.org.yaml) to enforce; defaults to $GCP_SEEDER_ORG_CONFIG')
+  .option('--owner <email>', 'Project owner, stored as the owner label (defaults to you when an org config is in use)')
+  .option('--label <key=value>', 'Extra project label; repeat for more', (v: string, acc: string[] = []) => [...acc, v])
   .option('--json', 'Emit the SeedResult as JSON (implies --yes; suppresses progress output)')
   .option('-y, --yes', 'Skip prompts; use flags/defaults non-interactively')
   .action(run);
@@ -72,20 +80,41 @@ program
   .option('--preset <name>', `Preset whose APIs you intend to enable: ${ALL_PRESETS.join(', ')}`)
   .option('--service-account', 'Plan includes a downloadable SA key (checks the key-creation org policy)')
   .option('--oauth-client', 'Plan includes an OAuth client (checks the project will be inside an org)')
+  .option('--org-config <file>', 'Check the plan against an org policy (gcp-seeder.org.yaml); defaults to $GCP_SEEDER_ORG_CONFIG')
+  .option('--owner <email>', 'Planned project owner')
+  .option('--label <key=value>', 'Planned extra label; repeat for more', (v: string, acc: string[] = []) => [...acc, v])
+  .option('--ttl <duration>', 'Planned expiry (checked against the org config)')
+  .option('--budget <usd>', 'Planned budget in USD (checked against the org config)', (v) => parseFloat(v))
+  .option('--quota-project <id>', 'Project to bill the Org Policy reads to (defaults to your ADC quota project)')
   .option('--json', 'Emit the PreflightReport as JSON')
-  .action(async (opts: { projectId?: string; parent?: string; billingAccount?: string; apis?: string; preset?: string; serviceAccount?: boolean; oauthClient?: boolean; json?: boolean }) => {
+  .action(async (opts: { projectId?: string; parent?: string; billingAccount?: string; apis?: string; preset?: string; serviceAccount?: boolean; oauthClient?: boolean; orgConfig?: string; owner?: string; label?: string[]; ttl?: string; budget?: number; quotaProject?: string; json?: boolean }) => {
     const apis = opts.apis
       ? opts.apis.split(',').map((s) => s.trim()).filter(Boolean)
       : opts.preset
         ? (PRESETS[opts.preset] ?? PROVISIONING_PRESETS[opts.preset]?.apis ?? [])
         : [];
-    const report = await preflight({
-      projectId: opts.projectId,
+    const wantsServiceAccountKey = Boolean(opts.serviceAccount) || Boolean(PROVISIONING_PRESETS[opts.preset ?? '']);
+    const orgConfig = await loadOrgConfigForCli(opts.orgConfig);
+    const owner = opts.owner ?? (orgConfig ? await callerEmailOrUndefined() : undefined);
+    const { resolved, violations } = resolvePolicy(orgConfig, {
       parent: opts.parent,
       billingAccount: opts.billingAccount,
+      budgetUsd: opts.budget,
+      ttl: opts.ttl,
+      wantsServiceAccountKey,
       apis,
-      wantsServiceAccountKey: Boolean(opts.serviceAccount) || Boolean(PROVISIONING_PRESETS[opts.preset ?? '']),
+      labels: parseLabelArgs(opts.label),
+      owner,
+    });
+    const report = await preflight({
+      projectId: opts.projectId,
+      parent: resolved.parent,
+      billingAccount: resolved.billingAccount,
+      apis,
+      wantsServiceAccountKey,
       wantsOAuthClient: Boolean(opts.oauthClient),
+      policyViolations: violations,
+      quotaProject: opts.quotaProject,
       logger: opts.json ? undefined : log,
     });
     if (opts.json) {
@@ -195,16 +224,18 @@ program
   .option('--max-age <duration>', 'Also sweep projects older than this even without an expiry (e.g. 30d, 2w)')
   .option('--flag <pattern...>', 'Glob fallbacks to claim pre-label projects (default: gyb-project-*, seed-*)')
   .option('--remove-liens', 'Remove liens before deleting (otherwise a liened project is skipped)')
+  .option('--project <id...>', 'Only consider these projects (expiry/ownership rules still apply); use in shared folders')
   .option('--apply', 'Actually delete (default is a dry-run)')
   .option('--json', 'Emit the SweepResult as JSON (implies --yes; suppresses progress output)')
   .option('-y, --yes', 'Skip the interactive confirmation (for scripts)')
-  .action(async (opts: { maxAge?: string; flag?: string[]; removeLiens?: boolean; apply?: boolean; json?: boolean; yes?: boolean }) => {
+  .action(async (opts: { maxAge?: string; flag?: string[]; removeLiens?: boolean; project?: string[]; apply?: boolean; json?: boolean; yes?: boolean }) => {
     const json = Boolean(opts.json);
     // Always show the plan first (dry-run pass), so the user sees what's targeted.
     const plan = await sweepProjects({
       maxAge: opts.maxAge,
       flagPatterns: opts.flag,
       removeLiens: opts.removeLiens,
+      projectIds: opts.project,
       apply: false,
       logger: json ? undefined : log,
     });
@@ -233,7 +264,7 @@ program
       }
     }
 
-    const result = await sweepProjects({ maxAge: opts.maxAge, flagPatterns: opts.flag, removeLiens: opts.removeLiens, apply: true, logger: json ? undefined : log });
+    const result = await sweepProjects({ maxAge: opts.maxAge, flagPatterns: opts.flag, removeLiens: opts.removeLiens, projectIds: opts.project, apply: true, logger: json ? undefined : log });
     if (json) {
       console.log(JSON.stringify(result, null, 2));
     } else {
@@ -435,13 +466,32 @@ interface CliOptions {
   budgetTopic?: string;
   killSwitch?: boolean;
   skipPreflight?: boolean;
+  quotaProject?: string;
   oauthClient?: boolean;
   supportEmail?: string;
   outputDir: string;
   ttl?: string;
   manifest?: string;
+  orgConfig?: string;
+  owner?: string;
+  label?: string[];
   json?: boolean;
   yes?: boolean;
+}
+
+/** The caller's email for the default owner; undefined (never throws) when credentials are missing. */
+async function callerEmailOrUndefined(): Promise<string | undefined> {
+  try {
+    return await getCallerEmail(await resolveAuth());
+  } catch {
+    return undefined;
+  }
+}
+
+/** Load the org config named by --org-config / $GCP_SEEDER_ORG_CONFIG, if any. */
+async function loadOrgConfigForCli(flag?: string): Promise<OrgConfig | undefined> {
+  const path = resolveOrgConfigPath(flag);
+  return path ? loadOrgConfig(path) : undefined;
 }
 
 async function run(opts: CliOptions): Promise<void> {
@@ -450,16 +500,45 @@ async function run(opts: CliOptions): Promise<void> {
   const json = Boolean(opts.json);
   const interactive = !opts.yes && !json;
 
+  // Refuse a bare non-interactive run before touching the network.
+  if (!opts.manifest) assertSeedHasIntent(opts, interactive);
+
   // Preflight: make sure we actually have credentials before doing any work.
   await ensureBootstrap({ interactive, autoInstall: Boolean(opts.yes) || json, logger: json ? () => {} : log });
 
+  // Org policy (gcp-seeder.org.yaml): fills defaults and refuses requests that
+  // loosen any rule. Enforced even with --skip-preflight.
+  const orgConfig = await loadOrgConfigForCli(opts.orgConfig);
+  const flagLabels = parseLabelArgs(opts.label);
+  const defaultOwner = async (explicit?: string) =>
+    explicit ?? (orgConfig ? await callerEmailOrUndefined() : undefined);
+
   // Declarative path: reconcile from a manifest instead of flags/prompts.
   if (opts.manifest) {
-    const seedOpts = manifestToSeedOptions(await loadManifest(opts.manifest));
+    const manifest = await loadManifest(opts.manifest);
+    const seedOpts = manifestToSeedOptions(manifest);
+    const { resolved, violations } = resolvePolicy(orgConfig, {
+      parent: seedOpts.parent ?? opts.parent,
+      billingAccount: seedOpts.billingAccount ?? opts.billingAccount,
+      budgetUsd: seedOpts.budget?.amountUsd,
+      ttl: seedOpts.ttl ?? opts.ttl,
+      harden: seedOpts.harden,
+      wantsServiceAccountKey: Boolean(seedOpts.serviceAccounts?.some((sa) => sa.keyFile)) || seedOpts.credentials.serviceAccount,
+      apis: seedOpts.apis,
+      labels: { ...flagLabels, ...(seedOpts.labels ?? {}) },
+      owner: await defaultOwner(manifest.owner ?? opts.owner),
+    });
+    assertNoViolations(violations);
     if (!json) console.log(`\nApplying manifest ${opts.manifest} (reconcile)…`);
-    const billingAccount = await resolveBillingForCli(seedOpts.billingAccount ?? opts.billingAccount, seedOpts.apis, interactive, json);
+    const billingAccount = await resolveBillingForCli(resolved.billingAccount, seedOpts.apis, interactive, json);
     const result = await seedProject({
       ...seedOpts,
+      parent: resolved.parent,
+      ttl: resolved.ttl,
+      harden: resolved.harden,
+      labels: resolved.labels,
+      ownerEmail: resolved.owner,
+      budget: seedOpts.budget ?? (resolved.budgetUsd !== undefined && billingAccount ? { amountUsd: resolved.budgetUsd } : undefined),
       billingAccount,
       outputDir: seedOpts.outputDir ?? opts.outputDir,
       logger: json ? () => {} : log,
@@ -529,15 +608,29 @@ async function run(opts: CliOptions): Promise<void> {
   if (opts.budget !== undefined && !(Number.isFinite(opts.budget) && opts.budget > 0)) {
     throw new Error('--budget must be a positive number of USD.');
   }
-  const billingAccount = await resolveBillingForCli(opts.billingAccount, apis, interactive, json);
-  if (opts.budget !== undefined && !billingAccount) throw new Error('--budget needs a linked billing account (pass --billing-account).');
-  const budget = opts.budget !== undefined ? { amountUsd: opts.budget, topic: opts.budgetTopic, killSwitch: opts.killSwitch } : undefined;
+  const wantsServiceAccountKey = credentials.serviceAccount || serviceAccounts.length > 0;
+  const { resolved: policy, violations } = resolvePolicy(orgConfig, {
+    parent: opts.parent,
+    billingAccount: opts.billingAccount,
+    budgetUsd: opts.budget,
+    ttl: opts.ttl,
+    harden: opts.harden,
+    wantsServiceAccountKey,
+    apis,
+    labels: flagLabels,
+    owner: await defaultOwner(opts.owner),
+  });
+  // Policy is not optional: --skip-preflight skips the API checks, not the org config.
+  if (opts.skipPreflight) assertNoViolations(violations);
+  const billingAccount = await resolveBillingForCli(policy.billingAccount, apis, interactive, json);
+  if (policy.budgetUsd !== undefined && !billingAccount) throw new Error('--budget needs a linked billing account (pass --billing-account).');
+  const budget = policy.budgetUsd !== undefined ? { amountUsd: policy.budgetUsd, topic: opts.budgetTopic, killSwitch: opts.killSwitch } : undefined;
 
   // Preflight: catch quota / billing / org-policy / burned-id problems before
   // anything exists. A `fail` stops the run; warn/skip are printed and continue.
   // An OAuth client needs the project inside an org for an Internal consent
   // screen. In the wizard, offer the org(s) the caller can see.
-  let parent = opts.parent;
+  let parent = policy.parent;
   if (interactive && credentials.oauthClient && !parent) {
     const orgs = await findAccessibleOrganizations(await resolveAuth()).catch(() => []);
     if (orgs.length) {
@@ -557,8 +650,10 @@ async function run(opts: CliOptions): Promise<void> {
       parent,
       billingAccount,
       apis,
-      wantsServiceAccountKey: credentials.serviceAccount || serviceAccounts.length > 0,
+      wantsServiceAccountKey,
       wantsOAuthClient: credentials.oauthClient,
+      policyViolations: violations,
+      quotaProject: opts.quotaProject,
       logger: json ? undefined : undefined,
     });
     if (!json) printPreflightReport(report);
@@ -590,9 +685,12 @@ async function run(opts: CliOptions): Promise<void> {
     console.log(`  billing       ${billingAccount ?? 'none (project stays unbilled)'}`);
     console.log(`  keyless (wif) ${wif ? `yes (${wif.provider}:${wif.repo})` : 'no'}`);
     console.log(`  oauth client  ${credentials.oauthClient ? 'yes' : 'no'}`);
-    console.log(`  harden        ${opts.harden ? 'yes (delete default network, demote default compute SA)' : 'no'}`);
+    console.log(`  harden        ${policy.harden ? 'yes (delete default network, demote default compute SA)' : 'no'}`);
     if (budget) console.log(`  budget        $${budget.amountUsd}${budget.killSwitch ? ' + kill-switch template' : ''}`);
-    console.log(`  ttl           ${opts.ttl ?? 'none (no expiry)'}`);
+    console.log(`  ttl           ${policy.ttl ?? 'none (no expiry)'}`);
+    const labelList = Object.entries(policy.labels ?? {}).map(([k, v]) => `${k}=${v}`);
+    if (labelList.length) console.log(`  labels        ${labelList.join(', ')}`);
+    if (orgConfig) console.log(`  org config    ${resolveOrgConfigPath(opts.orgConfig)}`);
     console.log(`  output dir    ${opts.outputDir}\n`);
   }
 
@@ -612,9 +710,11 @@ async function run(opts: CliOptions): Promise<void> {
     billingAccount,
     roles: roles?.length ? roles : undefined,
     wait: opts.wait,
-    harden: opts.harden,
+    harden: policy.harden,
     budget,
-    ttl: opts.ttl,
+    ttl: policy.ttl,
+    labels: policy.labels,
+    ownerEmail: policy.owner,
     supportEmail,
     outputDir: opts.outputDir,
     logger: json ? () => {} : undefined,
@@ -641,6 +741,7 @@ async function run(opts: CliOptions): Promise<void> {
   }
   printHardening(result);
   if (result.oauthClient) console.log(`  OAuth:    ${result.oauthClient.clientSecretsFile}`);
+  if (result.ownerContact) console.log(`  Owner:    ${result.ownerContact}  (Essential Contact)`);
   for (const w of result.warnings) console.warn(`  ⚠ ${w}`);
 
   printWifGuidance(result);

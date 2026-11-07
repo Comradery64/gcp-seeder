@@ -1,3 +1,4 @@
+import { google } from 'googleapis';
 import { GoogleAuth, OAuth2Client, type AuthClient } from 'google-auth-library';
 import { gcloudAdcAccessToken } from './gcloud.js';
 
@@ -32,6 +33,9 @@ export async function resolveAuth(provided?: AuthClient): Promise<AuthClient> {
     // (e.g. an old throwaway), which makes every call fail with "Project … has
     // been deleted." Our admin operations bill quota to the target project in
     // the request path, so we drop the user-project header entirely to stay robust.
+    // Keep the original aside: checks that run before the target project exists
+    // (preflight's org-policy read) can still opt in to billing it explicitly.
+    (client as { seederAdcQuotaProject?: string }).seederAdcQuotaProject = client.quotaProjectId ?? undefined;
     client.quotaProjectId = undefined;
   } catch (err) {
     // No ADC discoverable at all — try a gcloud-minted token, else guide the user.
@@ -96,4 +100,25 @@ export function buildOAuthClientFromEnv(): OAuth2Client | undefined {
     clientSecret,
     redirectUri: 'http://localhost',
   });
+}
+
+/**
+ * Best-effort email of whoever the credentials act as: the userinfo email for
+ * user credentials, else the target principal of impersonated service-account
+ * credentials (userinfo fails for those). Undefined when neither is available.
+ */
+export async function getCallerEmail(auth: AuthClient): Promise<string | undefined> {
+  try {
+    const { data } = await google.oauth2({ version: 'v2', auth: auth as never }).userinfo.get();
+    if (data.email) return data.email;
+  } catch {
+    // fall through to the impersonation check
+  }
+  const target = (auth as { targetPrincipal?: unknown }).targetPrincipal;
+  return typeof target === 'string' && target.includes('@') ? target : undefined;
+}
+
+/** The quota project ADC was configured with, before `resolveAuth` stripped it. */
+export function adcQuotaProject(auth: AuthClient): string | undefined {
+  return (auth as { seederAdcQuotaProject?: string }).seederAdcQuotaProject || undefined;
 }

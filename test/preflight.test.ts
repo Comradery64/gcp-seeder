@@ -95,7 +95,7 @@ test('all-pass baseline: every check reports pass or skip, report is ok', async 
   const r = await preflight({ auth: {} as never });
 
   assert.equal(r.ok, true);
-  assert.equal(r.checks.length, 8);
+  assert.equal(r.checks.length, 9);
   assert.ok(!r.checks.some((c) => c.status === 'fail'));
   assert.equal(findCheck(r.checks, 'auth').status, 'pass');
   assert.match(findCheck(r.checks, 'auth').detail, /me@example\.com/);
@@ -122,7 +122,7 @@ test('preflight() never throws when resolveAuth itself fails; auth is a FAIL and
   // No auth injected and ADC is blocked by test/setup.ts, so resolveAuth rejects.
   // "Nothing could be checked" must not read as ok:true to a CI/agent consumer.
   const r = await preflight({});
-  assert.equal(r.checks.length, 8);
+  assert.equal(r.checks.length, 9);
   const auth = r.checks.find((c) => c.id === 'auth')!;
   assert.equal(auth.status, 'fail');
   assert.match(auth.fix ?? '', /gcp-seeder init/);
@@ -466,4 +466,35 @@ test('oauth-org: skips (not fails) when organizations cannot be listed', async (
   const r = await preflight({ auth: {} as never, wantsOAuthClient: true });
   assert.equal(findCheck(r.checks, 'oauth-org').status, 'skip');
   assert.equal(r.ok, true);
+});
+
+test('org-policy reads send x-goog-user-project: explicit quotaProject, else the ADC quota project, else none', async () => {
+  const seen: Array<Record<string, string> | undefined> = [];
+  const getEffectivePolicy = async (params: { name: string; headers?: Record<string, string> }) => {
+    seen.push(params.headers);
+    return { data: { spec: { rules: [] } } };
+  };
+  const orgpolicy = { folders: { policies: { getEffectivePolicy } }, organizations: { policies: { getEffectivePolicy } } };
+
+  baseMocks({ orgpolicy });
+  let r = await preflight({ auth: {} as never, parent: 'folders/123456789', quotaProject: 'quota-proj-1' });
+  assert.equal(findCheck(r.checks, 'org-policy').status, 'pass');
+  assert.ok(seen.length >= 1);
+  assert.ok(seen.every((h) => h?.['x-goog-user-project'] === 'quota-proj-1'), 'every read carries the explicit quota project');
+
+  seen.length = 0;
+  r = await preflight({ auth: { seederAdcQuotaProject: 'adc-quota-proj' } as never, parent: 'folders/123456789' });
+  assert.ok(seen.every((h) => h?.['x-goog-user-project'] === 'adc-quota-proj'), 'falls back to the ADC quota project');
+
+  seen.length = 0;
+  r = await preflight({ auth: {} as never, parent: 'folders/123456789' });
+  assert.ok(seen.every((h) => h === undefined), 'no header when no quota project is known');
+});
+
+test('org-policy skip without a quota project suggests --quota-project', async () => {
+  const fail = async () => { throw new Error('Organization Policy API has not been used in project 111111111111'); };
+  baseMocks({ orgpolicy: { folders: { policies: { getEffectivePolicy: fail } }, organizations: { policies: { getEffectivePolicy: fail } } } });
+  const c = findCheck((await preflight({ auth: {} as never, parent: 'folders/123456789' })).checks, 'org-policy') as { status: string; fix?: string };
+  assert.equal(c.status, 'skip');
+  assert.match(c.fix ?? '', /--quota-project/);
 });

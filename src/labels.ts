@@ -66,3 +66,30 @@ export function ageInDays(labels: Record<string, string> | undefined, now: Date)
   if (Number.isNaN(then)) return undefined;
   return Math.floor((now.getTime() - then) / 86_400_000);
 }
+
+/** Keys gcp-seeder manages itself; user labels may not set them. */
+export const RESERVED_LABEL_KEYS = new Set([LABEL_SEEDED_BY, LABEL_SEEDED_AT, LABEL_EXPIRES]);
+
+const LABEL_KEY_RE = /^[a-z][a-z0-9_-]{0,62}$/;
+const LABEL_VALUE_RE = /^[a-z0-9_-]{0,63}$/;
+
+/** Throw if any label breaks GCP's rules or uses a reserved key. Returns the labels for chaining. */
+export function validateUserLabels(labels: Record<string, string>): Record<string, string> {
+  for (const [k, v] of Object.entries(labels)) {
+    if (RESERVED_LABEL_KEYS.has(k)) throw new Error(`Label "${k}" is managed by gcp-seeder and can't be set by hand.`);
+    if (!LABEL_KEY_RE.test(k)) throw new Error(`Invalid label key "${k}": lowercase letters, digits, _ or -, starting with a letter, max 63.`);
+    if (!LABEL_VALUE_RE.test(v)) throw new Error(`Invalid value for label "${k}": lowercase letters, digits, _ or -, max 63.`);
+  }
+  return labels;
+}
+
+/** Parse repeated `--label key=value` arguments into a validated label map. */
+export function parseLabelArgs(args: string[] | undefined): Record<string, string> {
+  const labels: Record<string, string> = {};
+  for (const arg of args ?? []) {
+    const i = arg.indexOf('=');
+    if (i <= 0) throw new Error(`Invalid --label "${arg}": use key=value.`);
+    labels[arg.slice(0, i).trim()] = arg.slice(i + 1).trim();
+  }
+  return validateUserLabels(labels);
+}
