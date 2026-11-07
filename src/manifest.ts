@@ -45,6 +45,8 @@ const ManifestSchema = z
       .strict()
       .optional(),
     ttl: z.string().optional(),
+    owner: z.string().email().optional(),
+    labels: z.record(z.string(), z.string()).optional(),
     oauthClient: z.boolean().optional(),
     supportEmail: z.string().optional(),
     outputDir: z.string().optional(),
@@ -109,6 +111,7 @@ export function manifestToSeedOptions(m: Manifest): SeedOptions {
     serviceAccounts: serviceAccounts.length ? serviceAccounts : undefined,
     wif: m.wif ? parseWifTarget(m.wif) : undefined,
     ttl: m.ttl,
+    labels: m.labels,
     supportEmail: m.supportEmail,
     outputDir: m.outputDir,
     reconcile: true,

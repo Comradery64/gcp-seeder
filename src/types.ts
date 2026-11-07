@@ -140,6 +140,18 @@ export interface SeedOptions {
    */
   ttl?: string;
   /**
+   * Extra project labels (e.g. `owner`, `cost-center`). Validated against GCP
+   * label rules; the managed keys `seeded-by`, `seeded-at` and `expires` are
+   * reserved.
+   */
+  labels?: Record<string, string>;
+  /**
+   * The owner's real email. Recorded as the project's TECHNICAL Essential
+   * Contact (the `owner` label holds only a label-safe form). Failure to write
+   * it is a warning, not an error.
+   */
+  ownerEmail?: string;
+  /**
    * Billing account to link right after the project is created (before APIs
    * are enabled — most non-Workspace APIs refuse to enable on an unbilled
    * project). "012345-ABCDEF-678901" or "billingAccounts/…". Omit to leave the
@@ -495,6 +507,8 @@ export interface SeedResult {
   enabledApis: string[];
   /** Labels stamped on the project (seeded-by, seeded-at, and expires when a ttl was set). */
   labels: Record<string, string>;
+  /** The owner recorded as an Essential Contact, when `ownerEmail` was given and the write succeeded. */
+  ownerContact?: string;
   /**
    * The first service account created, if any. Retained for backwards
    * compatibility; prefer `serviceAccounts` for multi-SA setups.

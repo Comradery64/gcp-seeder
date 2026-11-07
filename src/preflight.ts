@@ -1,7 +1,8 @@
 import { google } from 'googleapis';
 import type { AuthClient } from 'google-auth-library';
-import { resolveAuth } from './auth.js';
+import { adcQuotaProject, resolveAuth } from './auth.js';
 import { resolveBillingAccount, canLinkProjects, countLinkedProjects } from './billing.js';
+import type { PolicyViolation } from './orgconfig.js';
 
 export interface PreflightCheck {
   id: string;
@@ -29,6 +30,14 @@ export interface PreflightOptions {
   wantsServiceAccountKey?: boolean;
   /** Whether the plan includes an OAuth client (drives the oauth-org check). */
   wantsOAuthClient?: boolean;
+  /**
+   * Project to bill org-policy reads to (`x-goog-user-project`). The Org Policy
+   * API refuses plain user ADC without one. Defaults to the quota project ADC
+   * was configured with.
+   */
+  quotaProject?: string;
+  /** Violations from `applyOrgPolicy`. Omit when no org config is in use (check is skipped). */
+  policyViolations?: PolicyViolation[];
   /** Pre-authorized cloud-platform auth client. Falls back to ADC. */
   auth?: AuthClient;
   /** Receives progress lines. Default: no-op. */
@@ -58,7 +67,7 @@ export const BILLING_REQUIRED_APIS = new Set<string>([
   'generativelanguage.googleapis.com',
 ]);
 
-const ALL_CHECK_IDS = ['auth', 'project-id', 'quota', 'parent', 'billing', 'org-policy', 'bootstrap-apis', 'oauth-org'];
+const ALL_CHECK_IDS = ['auth', 'project-id', 'quota', 'parent', 'billing', 'org-policy', 'bootstrap-apis', 'oauth-org', 'policy'];
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -260,15 +269,17 @@ async function checkOrgPolicy(
   parent: string | undefined,
   wantsServiceAccountKey: boolean,
   apis: string[],
+  quotaProject?: string,
 ): Promise<PreflightCheck> {
   if (!parent) return { id: 'org-policy', status: 'skip', detail: 'No --parent given; org policy cannot be evaluated.' };
+  const headers = quotaProject ? { 'x-goog-user-project': quotaProject } : undefined;
   try {
     const orgpolicy = google.orgpolicy({ version: 'v2', auth: auth as never });
     const isFolder = parent.startsWith('folders/');
     const policies = isFolder ? orgpolicy.folders.policies : orgpolicy.organizations.policies;
 
     const getEffective = async (constraint: string): Promise<EffectivePolicyLike | undefined> => {
-      const { data } = await policies.getEffectivePolicy({ name: `${parent}/policies/${constraint}` });
+      const { data } = await policies.getEffectivePolicy({ name: `${parent}/policies/${constraint}`, ...(headers ? { headers } : {}) } as never);
       return data as EffectivePolicyLike;
     };
 
@@ -308,7 +319,12 @@ async function checkOrgPolicy(
       ...(fix ? { fix } : {}),
     };
   } catch (err) {
-    return { id: 'org-policy', status: 'skip', detail: `Could not read org policy on ${parent}: ${errMsg(err)}` };
+    return {
+      id: 'org-policy',
+      status: 'skip',
+      detail: `Could not read org policy on ${parent}: ${errMsg(err)}`,
+      ...(quotaProject ? {} : { fix: 'The Org Policy API needs a quota project: pass --quota-project <id> (a project with orgpolicy.googleapis.com enabled).' }),
+    };
   }
 }
 
@@ -387,6 +403,18 @@ async function checkOAuthOrg(auth: AuthClient, parent: string | undefined, wants
   }
 }
 
+/** 9. policy — the request against the org config (gcp-seeder.org.yaml). Local, no API calls. */
+export function checkPolicy(violations: PolicyViolation[] | undefined): PreflightCheck {
+  if (!violations) return { id: 'policy', status: 'skip', detail: 'No org config in use.' };
+  if (violations.length === 0) return { id: 'policy', status: 'pass', detail: 'Request complies with the org config.' };
+  return {
+    id: 'policy',
+    status: 'fail',
+    detail: violations.map((v) => `${v.rule}: ${v.detail}`).join(' '),
+    fix: violations.map((v) => v.fix).join(' '),
+  };
+}
+
 export const DEFAULT_PROJECTS_PER_BILLING_ACCOUNT = 5;
 
 export async function preflight(options: PreflightOptions = {}): Promise<PreflightReport> {
@@ -404,7 +432,9 @@ export async function preflight(options: PreflightOptions = {}): Promise<Preflig
     return {
       checks: [
         { id: 'auth', status: 'fail', detail, fix: 'Run `gcp-seeder init` (or `gcloud auth application-default login`) and retry.' },
-        ...ALL_CHECK_IDS.filter((id) => id !== 'auth').map((id) => ({ id, status: 'skip' as const, detail: 'Skipped: no credentials.' })),
+        ...ALL_CHECK_IDS.filter((id) => id !== 'auth' && id !== 'policy').map((id) => ({ id, status: 'skip' as const, detail: 'Skipped: no credentials.' })),
+        // The policy check is local — report it even without credentials.
+        checkPolicy(options.policyViolations),
       ],
       ok: false,
     };
@@ -417,9 +447,10 @@ export async function preflight(options: PreflightOptions = {}): Promise<Preflig
     checkQuota(auth),
     checkParent(auth, options.parent),
     checkBilling(auth, options.billingAccount, apis),
-    checkOrgPolicy(auth, options.parent, options.wantsServiceAccountKey ?? false, apis),
+    checkOrgPolicy(auth, options.parent, options.wantsServiceAccountKey ?? false, apis, options.quotaProject ?? adcQuotaProject(auth)),
     checkBootstrapApis(auth),
     checkOAuthOrg(auth, options.parent, options.wantsOAuthClient ?? false),
+    Promise.resolve(checkPolicy(options.policyViolations)),
   ]);
 
   return { checks, ok: !checks.some((c) => c.status === 'fail') };
